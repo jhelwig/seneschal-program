@@ -1,7 +1,8 @@
 use chrono::Utc;
-use image::ImageEncoder;
 use image::codecs::webp::WebPEncoder;
+use image::{ImageEncoder, RgbaImage};
 use pdfium_render::prelude::*;
+use poppler::Document as PopplerDocument;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
@@ -11,6 +12,284 @@ use crate::config::EmbeddingsConfig;
 use crate::db::{Chunk, DocumentImage};
 use crate::error::{ProcessingError, ServiceError, ServiceResult};
 use crate::tools::AccessLevel;
+
+/// Rectangle representing image position on a PDF page
+#[derive(Debug, Clone)]
+struct Rectangle {
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+}
+
+impl Rectangle {
+    fn area(&self) -> f64 {
+        (self.x2 - self.x1).abs() * (self.y2 - self.y1).abs()
+    }
+
+    fn width(&self) -> f64 {
+        (self.x2 - self.x1).abs()
+    }
+
+    fn height(&self) -> f64 {
+        (self.y2 - self.y1).abs()
+    }
+}
+
+/// Information about an extracted PDF image
+struct ImageInfo {
+    image_id: i32,
+    area: Rectangle,
+    surface_data: Vec<u8>,
+    width: i32,
+    height: i32,
+    stride: i32,
+    has_alpha: bool,
+    is_grayscale: bool,
+}
+
+/// Check if two rectangles overlap by more than a threshold percentage
+fn rectangles_overlap(a: &Rectangle, b: &Rectangle, threshold: f64) -> bool {
+    let x_overlap = f64::max(0.0, f64::min(a.x2, b.x2) - f64::max(a.x1, b.x1));
+    let y_overlap = f64::max(0.0, f64::min(a.y2, b.y2) - f64::max(a.y1, b.y1));
+    let overlap_area = x_overlap * y_overlap;
+    let smaller_area = a.area().min(b.area());
+    if smaller_area <= 0.0 {
+        return false;
+    }
+    overlap_area / smaller_area > threshold
+}
+
+/// Group images by overlapping bounding boxes using union-find
+fn group_by_overlap(images: &[ImageInfo]) -> Vec<Vec<usize>> {
+    if images.is_empty() {
+        return Vec::new();
+    }
+
+    let n = images.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+
+    fn find(parent: &mut [usize], i: usize) -> usize {
+        if parent[i] != i {
+            parent[i] = find(parent, parent[i]);
+        }
+        parent[i]
+    }
+
+    fn union(parent: &mut [usize], i: usize, j: usize) {
+        let pi = find(parent, i);
+        let pj = find(parent, j);
+        if pi != pj {
+            parent[pi] = pj;
+        }
+    }
+
+    // Group images that overlap by more than 70%
+    const OVERLAP_THRESHOLD: f64 = 0.7;
+    for i in 0..n {
+        for j in (i + 1)..n {
+            if rectangles_overlap(&images[i].area, &images[j].area, OVERLAP_THRESHOLD) {
+                union(&mut parent, i, j);
+            }
+        }
+    }
+
+    // Collect groups
+    let mut groups: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+    for i in 0..n {
+        let root = find(&mut parent, i);
+        groups.entry(root).or_default().push(i);
+    }
+
+    // Convert to vec and sort groups by their average position on page (top to bottom, left to right)
+    let mut result: Vec<Vec<usize>> = groups.into_values().collect();
+    result.sort_by(|a, b| {
+        let avg_y_a: f64 = a.iter().map(|&i| images[i].area.y1).sum::<f64>() / a.len() as f64;
+        let avg_y_b: f64 = b.iter().map(|&i| images[i].area.y1).sum::<f64>() / b.len() as f64;
+        avg_y_a
+            .partial_cmp(&avg_y_b)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    result
+}
+
+/// Convert an ImageInfo to an RGBA image
+fn convert_to_rgba(info: &ImageInfo) -> RgbaImage {
+    let width = info.width as u32;
+    let height = info.height as u32;
+    let mut img = RgbaImage::new(width, height);
+
+    if info.is_grayscale {
+        // Grayscale A8 format -> RGBA (gray, gray, gray, 255)
+        // Cairo A8 stores alpha values, but for grayscale images we treat them as gray values
+        for y in 0..height {
+            for x in 0..width {
+                let offset = (y as i32 * info.stride + x as i32) as usize;
+                if offset < info.surface_data.len() {
+                    let gray = info.surface_data[offset];
+                    img.put_pixel(x, y, image::Rgba([gray, gray, gray, 255]));
+                }
+            }
+        }
+    } else if info.has_alpha {
+        // ARGB32 (Cairo premultiplied format) -> RGBA
+        // Cairo ARGB32 is stored as 32-bit native-endian with alpha in highest byte
+        // On little-endian systems: BGRA byte order
+        for y in 0..height {
+            for x in 0..width {
+                let offset = (y as i32 * info.stride + x as i32 * 4) as usize;
+                if offset + 3 < info.surface_data.len() {
+                    let b = info.surface_data[offset];
+                    let g = info.surface_data[offset + 1];
+                    let r = info.surface_data[offset + 2];
+                    let a = info.surface_data[offset + 3];
+
+                    // Un-premultiply alpha
+                    let (r, g, b) = if a > 0 && a < 255 {
+                        let alpha_f = a as f32 / 255.0;
+                        (
+                            (r as f32 / alpha_f).min(255.0) as u8,
+                            (g as f32 / alpha_f).min(255.0) as u8,
+                            (b as f32 / alpha_f).min(255.0) as u8,
+                        )
+                    } else {
+                        (r, g, b)
+                    };
+
+                    img.put_pixel(x, y, image::Rgba([r, g, b, a]));
+                }
+            }
+        }
+    } else {
+        // RGB24 format -> RGBA
+        // Cairo RGB24 is stored as 32-bit with high byte unused: xRGB on big-endian, BGRx on little-endian
+        for y in 0..height {
+            for x in 0..width {
+                let offset = (y as i32 * info.stride + x as i32 * 4) as usize;
+                if offset + 3 < info.surface_data.len() {
+                    let b = info.surface_data[offset];
+                    let g = info.surface_data[offset + 1];
+                    let r = info.surface_data[offset + 2];
+                    // Ignore byte at offset + 3 (unused)
+                    img.put_pixel(x, y, image::Rgba([r, g, b, 255]));
+                }
+            }
+        }
+    }
+
+    img
+}
+
+/// Alpha blend two pixels (Porter-Duff "over" operation)
+fn alpha_blend(dst: image::Rgba<u8>, src: image::Rgba<u8>) -> image::Rgba<u8> {
+    let src_a = src[3] as f32 / 255.0;
+    let dst_a = dst[3] as f32 / 255.0;
+
+    // out_a = src_a + dst_a * (1 - src_a)
+    let out_a = src_a + dst_a * (1.0 - src_a);
+
+    if out_a <= 0.0 {
+        return image::Rgba([0, 0, 0, 0]);
+    }
+
+    // out_rgb = (src_rgb * src_a + dst_rgb * dst_a * (1 - src_a)) / out_a
+    let blend = |s: u8, d: u8| -> u8 {
+        let s_f = s as f32 / 255.0;
+        let d_f = d as f32 / 255.0;
+        let out = (s_f * src_a + d_f * dst_a * (1.0 - src_a)) / out_a;
+        (out * 255.0).clamp(0.0, 255.0) as u8
+    };
+
+    image::Rgba([
+        blend(src[0], dst[0]),
+        blend(src[1], dst[1]),
+        blend(src[2], dst[2]),
+        (out_a * 255.0) as u8,
+    ])
+}
+
+/// Composite a layer onto a canvas at the given offset
+fn composite_over(canvas: &mut RgbaImage, layer: &RgbaImage, offset_x: i32, offset_y: i32) {
+    for (ly, row) in layer.rows().enumerate() {
+        for (lx, &pixel) in row.enumerate() {
+            let cx = lx as i32 + offset_x;
+            let cy = ly as i32 + offset_y;
+            if cx >= 0 && cy >= 0 && cx < canvas.width() as i32 && cy < canvas.height() as i32 {
+                let dst = canvas.get_pixel(cx as u32, cy as u32);
+                let blended = alpha_blend(*dst, pixel);
+                canvas.put_pixel(cx as u32, cy as u32, blended);
+            }
+        }
+    }
+}
+
+/// Calculate the bounding box encompassing all images in a group
+fn calculate_group_bounds(images: &[ImageInfo], indices: &[usize]) -> Rectangle {
+    let mut min_x = f64::MAX;
+    let mut min_y = f64::MAX;
+    let mut max_x = f64::MIN;
+    let mut max_y = f64::MIN;
+
+    for &idx in indices {
+        let area = &images[idx].area;
+        min_x = min_x.min(area.x1).min(area.x2);
+        min_y = min_y.min(area.y1).min(area.y2);
+        max_x = max_x.max(area.x1).max(area.x2);
+        max_y = max_y.max(area.y1).max(area.y2);
+    }
+
+    Rectangle {
+        x1: min_x,
+        y1: min_y,
+        x2: max_x,
+        y2: max_y,
+    }
+}
+
+/// Composite a group of images into a single image
+/// Layers are composited in reverse order (back to front based on list order)
+fn composite_group(images: &[ImageInfo], indices: &[usize]) -> Option<RgbaImage> {
+    if indices.is_empty() {
+        return None;
+    }
+
+    if indices.len() == 1 {
+        // Single image - just convert to RGBA
+        return Some(convert_to_rgba(&images[indices[0]]));
+    }
+
+    // Calculate bounds for the composite canvas
+    let bounds = calculate_group_bounds(images, indices);
+    let canvas_width = bounds.width().ceil() as u32;
+    let canvas_height = bounds.height().ceil() as u32;
+
+    if canvas_width == 0 || canvas_height == 0 {
+        return None;
+    }
+
+    // Create transparent canvas
+    let mut canvas = RgbaImage::new(canvas_width, canvas_height);
+
+    // Sort indices by image_id ascending (lower IDs drawn first = back layer)
+    // This matches the discovery that images are listed in reverse z-order
+    let mut sorted_indices = indices.to_vec();
+    sorted_indices.sort_by_key(|&idx| images[idx].image_id);
+
+    // Composite each layer (back to front)
+    for &idx in &sorted_indices {
+        let info = &images[idx];
+        let layer = convert_to_rgba(info);
+
+        // Calculate offset relative to canvas
+        let offset_x = (info.area.x1.min(info.area.x2) - bounds.x1) as i32;
+        let offset_y = (info.area.y1.min(info.area.y2) - bounds.y1) as i32;
+
+        composite_over(&mut canvas, &layer, offset_x, offset_y);
+    }
+
+    Some(canvas)
+}
 
 /// Create a new Pdfium instance (dynamically linked)
 /// Searches for libpdfium in:
@@ -164,7 +443,8 @@ impl IngestionService {
     /// Extract images from a PDF document and save them as WebP files
     /// Returns a list of DocumentImage records (without descriptions - those are added separately)
     ///
-    /// Uses the `pdfimages` tool from poppler-utils for reliable image extraction.
+    /// Uses poppler-rs for programmatic access to PDF images with position information,
+    /// allowing proper layer compositing (e.g., character artwork with drop shadows).
     pub fn extract_pdf_images(
         &self,
         path: &Path,
@@ -174,175 +454,238 @@ impl IngestionService {
         let images_dir = self.data_dir.join("images").join(document_id);
         std::fs::create_dir_all(&images_dir).map_err(ProcessingError::Io)?;
 
-        // Create temp directory for pdfimages output
-        let temp_dir = tempfile::tempdir().map_err(ProcessingError::Io)?;
-        let temp_prefix = temp_dir.path().join("img");
-
-        // Run pdfimages to extract all images
-        // -all: write images in native format (jpg, png, etc) where possible
-        // -p: include page number in output filename
-        // Usage: pdfimages [options] PDF-file image-root
-        let output = std::process::Command::new("pdfimages")
-            .arg("-all")
-            .arg("-p")
-            .arg(path.to_string_lossy().as_ref())
-            .arg(temp_prefix.to_string_lossy().as_ref())
-            .output()
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    ProcessingError::TextExtraction {
-                        page: 0,
-                        source: Box::new(std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            "pdfimages not found. Install poppler-utils to enable PDF image extraction.",
-                        )),
-                    }
-                } else {
-                    ProcessingError::Io(e)
-                }
-            })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!(error = %stderr, "pdfimages failed");
-            return Err(ServiceError::Processing(ProcessingError::TextExtraction {
+        // Load PDF with poppler
+        let canonical_path = path.canonicalize().map_err(ProcessingError::Io)?;
+        let uri = format!("file://{}", canonical_path.display());
+        let doc = PopplerDocument::from_file(&uri, None).map_err(|e| {
+            ProcessingError::TextExtraction {
                 page: 0,
                 source: Box::new(std::io::Error::other(format!(
-                    "pdfimages failed: {}",
-                    stderr
+                    "Failed to load PDF with poppler: {}",
+                    e
                 ))),
-            }));
-        }
+            }
+        })?;
 
-        // Read extracted files and convert to WebP
-        let mut images = Vec::new();
+        let mut all_images = Vec::new();
         let now = Utc::now();
-
-        let entries: Vec<_> = std::fs::read_dir(temp_dir.path())
-            .map_err(ProcessingError::Io)?
-            .filter_map(|e| e.ok())
-            .collect();
+        let n_pages = doc.n_pages();
 
         info!(
             document_id = document_id,
-            extracted_count = entries.len(),
-            "pdfimages extracted files"
+            pages = n_pages,
+            "Extracting images from PDF with poppler"
         );
 
-        for entry in entries {
-            let entry_path = entry.path();
-            let filename = match entry_path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n,
+        for page_num in 0..n_pages {
+            let page = match doc.page(page_num) {
+                Some(p) => p,
                 None => continue,
             };
 
-            // Skip soft masks (they're transparency data, not actual images)
-            if filename.contains("-smask") {
-                debug!(filename = filename, "Skipping soft mask");
+            let mappings = page.image_mapping();
+            if mappings.is_empty() {
                 continue;
             }
 
-            // Parse page number and image index from filename
-            // Format: img-NNN-MMM.ext where NNN is page number, MMM is image index
-            let (page_num, image_index) = match parse_pdfimages_filename(filename) {
-                Some((p, i)) => (p, i),
-                None => {
-                    debug!(filename = filename, "Could not parse pdfimages filename");
-                    continue;
-                }
-            };
+            // Extract image info from this page
+            let mut page_images: Vec<ImageInfo> = Vec::new();
 
-            // Load the image
-            let img = match image::open(&entry_path) {
-                Ok(i) => i,
-                Err(e) => {
+            for mapping in mappings.iter() {
+                // Access the raw mapping data to get image_id and area
+                let ptr = mapping.as_ptr();
+                let (image_id, area) = unsafe {
+                    let raw = &*ptr;
+                    let image_id = raw.image_id;
+                    let area = Rectangle {
+                        x1: raw.area.x1,
+                        y1: raw.area.y1,
+                        x2: raw.area.x2,
+                        y2: raw.area.y2,
+                    };
+                    (image_id, area)
+                };
+
+                // Get the image surface
+                let surface = match page.image(image_id) {
+                    Some(s) => s,
+                    None => {
+                        debug!(
+                            page = page_num + 1,
+                            image_id = image_id,
+                            "Could not get image surface"
+                        );
+                        continue;
+                    }
+                };
+
+                // Get surface properties using cairo FFI
+                let raw_surface = surface.to_raw_none();
+                let (format, width, height, stride) = unsafe {
+                    use cairo::ffi;
+                    let format = ffi::cairo_image_surface_get_format(raw_surface);
+                    let width = ffi::cairo_image_surface_get_width(raw_surface);
+                    let height = ffi::cairo_image_surface_get_height(raw_surface);
+                    let stride = ffi::cairo_image_surface_get_stride(raw_surface);
+                    (format, width, height, stride)
+                };
+
+                // Determine image type from format
+                // CAIRO_FORMAT_ARGB32 = 0
+                // CAIRO_FORMAT_RGB24 = 1
+                // CAIRO_FORMAT_A8 = 2
+                let (has_alpha, is_grayscale) = match format {
+                    0 => (true, false),  // ARGB32
+                    1 => (false, false), // RGB24
+                    2 => (false, true),  // A8 (grayscale)
+                    _ => {
+                        debug!(
+                            page = page_num + 1,
+                            image_id = image_id,
+                            format = format,
+                            "Unknown Cairo format"
+                        );
+                        continue;
+                    }
+                };
+
+                // Get surface data
+                let data_ptr = unsafe {
+                    use cairo::ffi;
+                    ffi::cairo_image_surface_get_data(raw_surface)
+                };
+
+                if data_ptr.is_null() {
                     debug!(
-                        filename = filename,
-                        error = %e,
-                        "Failed to load extracted image"
+                        page = page_num + 1,
+                        image_id = image_id,
+                        "Null surface data pointer"
                     );
                     continue;
                 }
-            };
 
-            let width = img.width();
-            let height = img.height();
+                let data_len = (stride * height) as usize;
+                let surface_data =
+                    unsafe { std::slice::from_raw_parts(data_ptr, data_len).to_vec() };
 
-            // Skip images that are too small for vision models (need at least 32x32)
-            const MIN_IMAGE_SIZE: u32 = 32;
-            if width < MIN_IMAGE_SIZE || height < MIN_IMAGE_SIZE {
-                debug!(
-                    page = page_num,
-                    image = image_index,
-                    width = width,
-                    height = height,
-                    "Skipping small image (below {}x{} threshold)",
-                    MIN_IMAGE_SIZE,
-                    MIN_IMAGE_SIZE
-                );
-                continue;
+                page_images.push(ImageInfo {
+                    image_id,
+                    area,
+                    surface_data,
+                    width,
+                    height,
+                    stride,
+                    has_alpha,
+                    is_grayscale,
+                });
             }
 
-            // Save as WebP
-            let image_id = Uuid::new_v4().to_string();
-            let webp_filename = format!("page_{}_img_{}.webp", page_num, image_index);
-            let webp_path = images_dir.join(&webp_filename);
-
-            let file = match File::create(&webp_path) {
-                Ok(f) => f,
-                Err(e) => {
-                    warn!(
-                        page = page_num,
-                        image = image_index,
-                        error = %e,
-                        "Failed to create image file"
-                    );
-                    continue;
-                }
-            };
-
-            let rgba = img.to_rgba8();
-            let encoder = WebPEncoder::new_lossless(file);
-            if let Err(e) = encoder.write_image(
-                rgba.as_raw(),
-                width,
-                height,
-                image::ExtendedColorType::Rgba8,
-            ) {
-                warn!(
-                    page = page_num,
-                    image = image_index,
-                    error = %e,
-                    "Failed to encode image as WebP"
-                );
-                let _ = std::fs::remove_file(&webp_path);
+            if page_images.is_empty() {
                 continue;
             }
-
-            images.push(DocumentImage {
-                id: image_id,
-                document_id: document_id.to_string(),
-                page_number: page_num,
-                image_index,
-                internal_path: webp_path.to_string_lossy().to_string(),
-                mime_type: "image/webp".to_string(),
-                width: Some(width),
-                height: Some(height),
-                description: None,
-                created_at: now,
-            });
 
             debug!(
-                page = page_num,
-                image = image_index,
-                width = width,
-                height = height,
-                "Extracted image"
+                page = page_num + 1,
+                images = page_images.len(),
+                "Found images on page"
             );
+
+            // Group images by overlapping bounding boxes
+            let groups = group_by_overlap(&page_images);
+
+            debug!(
+                page = page_num + 1,
+                groups = groups.len(),
+                "Grouped images into composites"
+            );
+
+            // Composite each group and save
+            for (group_idx, group) in groups.iter().enumerate() {
+                let composited = match composite_group(&page_images, group) {
+                    Some(img) => img,
+                    None => continue,
+                };
+
+                let width = composited.width();
+                let height = composited.height();
+
+                // Skip images that are too small for vision models (need at least 32x32)
+                const MIN_IMAGE_SIZE: u32 = 32;
+                if width < MIN_IMAGE_SIZE || height < MIN_IMAGE_SIZE {
+                    debug!(
+                        page = page_num + 1,
+                        group = group_idx,
+                        width = width,
+                        height = height,
+                        "Skipping small image (below {}x{} threshold)",
+                        MIN_IMAGE_SIZE,
+                        MIN_IMAGE_SIZE
+                    );
+                    continue;
+                }
+
+                // Save as WebP
+                let image_id = Uuid::new_v4().to_string();
+                let page_display = page_num + 1;
+                let webp_filename = format!("page_{}_img_{}.webp", page_display, group_idx);
+                let webp_path = images_dir.join(&webp_filename);
+
+                let file = match File::create(&webp_path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        warn!(
+                            page = page_display,
+                            group = group_idx,
+                            error = %e,
+                            "Failed to create image file"
+                        );
+                        continue;
+                    }
+                };
+
+                let encoder = WebPEncoder::new_lossless(file);
+                if let Err(e) = encoder.write_image(
+                    composited.as_raw(),
+                    width,
+                    height,
+                    image::ExtendedColorType::Rgba8,
+                ) {
+                    warn!(
+                        page = page_display,
+                        group = group_idx,
+                        error = %e,
+                        "Failed to encode image as WebP"
+                    );
+                    let _ = std::fs::remove_file(&webp_path);
+                    continue;
+                }
+
+                all_images.push(DocumentImage {
+                    id: image_id,
+                    document_id: document_id.to_string(),
+                    page_number: page_display,
+                    image_index: group_idx as i32,
+                    internal_path: webp_path.to_string_lossy().to_string(),
+                    mime_type: "image/webp".to_string(),
+                    width: Some(width),
+                    height: Some(height),
+                    description: None,
+                    created_at: now,
+                });
+
+                debug!(
+                    page = page_display,
+                    group = group_idx,
+                    layers = group.len(),
+                    width = width,
+                    height = height,
+                    "Extracted composited image"
+                );
+            }
         }
 
         // Sort by page number then image index for consistent ordering
-        images.sort_by(|a, b| {
+        all_images.sort_by(|a, b| {
             a.page_number
                 .cmp(&b.page_number)
                 .then(a.image_index.cmp(&b.image_index))
@@ -350,11 +693,11 @@ impl IngestionService {
 
         info!(
             document_id = document_id,
-            total_images = images.len(),
+            total_images = all_images.len(),
             "Extracted and saved images from PDF"
         );
 
-        Ok(images)
+        Ok(all_images)
     }
 
     /// Get the path where an image should be copied to in FVTT assets
@@ -609,30 +952,6 @@ fn strip_html_tags(html: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&apos;", "'")
         .replace("&nbsp;", " ")
-}
-
-/// Parse a pdfimages output filename to extract page number and image index
-/// Format: prefix-NNN-MMM.ext where NNN is page number, MMM is image index
-fn parse_pdfimages_filename(filename: &str) -> Option<(i32, i32)> {
-    // Remove extension
-    let stem = filename
-        .rsplit_once('.')
-        .map(|(s, _)| s)
-        .unwrap_or(filename);
-
-    // Split by '-' and get the last two parts (page number and image index)
-    let parts: Vec<&str> = stem.split('-').collect();
-    if parts.len() < 3 {
-        return None;
-    }
-
-    let page_str = parts[parts.len() - 2];
-    let index_str = parts[parts.len() - 1];
-
-    let page_num = page_str.parse::<i32>().ok()?;
-    let image_index = index_str.parse::<i32>().ok()?;
-
-    Some((page_num, image_index))
 }
 
 /// Sanitize a string for use as a filename

@@ -37,6 +37,10 @@ tokio-stream = { workspace = true }
 pdfium-render = { workspace = true }
 image = { workspace = true }
 
+# PDF image extraction with layer compositing
+poppler-rs = { workspace = true }
+cairo-rs = { workspace = true }
+
 # EPUB processing
 epub = { workspace = true }
 
