@@ -1416,14 +1416,14 @@ class DocumentManagementDialog extends Application {
     try {
       // Get vision model from settings
       const visionModel = getSetting(SETTINGS.VISION_MODEL);
-      const result = await this.backendClient.reextractDocumentImages(
+      await this.backendClient.reextractDocumentImages(
         documentId,
         visionModel || null
       );
       ui.notifications.info(
-        `${game.i18n.localize("SENESCHAL.Documents.ReextractImagesSuccess")} (${result.extracted_count} images)`
+        game.i18n.localize("SENESCHAL.Documents.ReextractImagesQueued")
       );
-      // Reload documents to get updated counts
+      // Reload documents to show processing status, then start polling
       await this._loadDocuments();
     } catch (error) {
       console.error("Re-extract images failed:", error);

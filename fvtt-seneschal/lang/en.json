@@ -100,6 +100,7 @@
       "ReextractImages": "Re-extract Images",
       "ReextractImagesConfirm": "This will delete existing images and re-extract them from the PDF. Continue?",
       "ReextractImagesNote": "This may take a while if a vision model is configured for image captioning.",
+      "ReextractImagesQueued": "Image re-extraction queued. Processing will continue in the background.",
       "ReextractImagesSuccess": "Images re-extracted successfully.",
       "ReextractImagesError": "Failed to re-extract images."
     },

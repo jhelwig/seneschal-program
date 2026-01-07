@@ -988,6 +988,26 @@ impl Database {
         Ok(rows > 0)
     }
 
+    /// Update document metadata
+    pub fn update_document_metadata(
+        &self,
+        document_id: &str,
+        metadata: Option<serde_json::Value>,
+    ) -> ServiceResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let metadata_json = metadata.map(|m| m.to_string());
+
+        let rows = conn
+            .execute(
+                "UPDATE documents SET metadata = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![metadata_json, document_id],
+            )
+            .map_err(DatabaseError::Query)?;
+
+        Ok(rows > 0)
+    }
+
     /// Get the next document pending processing (oldest first)
     /// Used by the document processing worker queue
     pub fn get_next_pending_document(&self) -> ServiceResult<Option<Document>> {

@@ -480,22 +480,20 @@ struct DeleteImagesResponse {
     message: String,
 }
 
-/// Re-extract images from a document
+/// Re-extract images from a document (queues for async processing)
 async fn reextract_document_images_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(request): Json<ReextractImagesRequest>,
 ) -> Result<Json<ReextractImagesResponse>, I18nError> {
-    let count = state
+    state
         .service
         .reextract_document_images(&id, request.vision_model)
-        .await
         .map_err(|e| state.i18n_error(e))?;
 
     Ok(Json(ReextractImagesResponse {
         success: true,
-        extracted_count: count,
-        message: format!("Extracted {} images", count),
+        message: "Image re-extraction queued".to_string(),
     }))
 }
 
@@ -507,7 +505,6 @@ struct ReextractImagesRequest {
 #[derive(Serialize)]
 struct ReextractImagesResponse {
     success: bool,
-    extracted_count: usize,
     message: String,
 }
 

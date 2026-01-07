@@ -1203,12 +1203,13 @@ When asked about rules or game content, use document_search to find relevant inf
     }
 
     /// Re-extract images from a document
-    pub async fn reextract_document_images(
+    /// This queues the document for reprocessing - the actual extraction happens in the background worker
+    pub fn reextract_document_images(
         &self,
         document_id: &str,
         vision_model: Option<String>,
-    ) -> ServiceResult<usize> {
-        // Get the document to find the original file
+    ) -> ServiceResult<()> {
+        // Get the document to validate it exists and is a PDF
         let document =
             self.db
                 .get_document(document_id)?
@@ -1217,16 +1218,18 @@ When asked about rules or game content, use document_search to find relevant inf
                 })?;
 
         // Get the file path
-        let file_path = document
-            .file_path
-            .ok_or_else(|| ServiceError::InvalidRequest {
-                message:
-                    "Document has no associated file. Re-upload the document to extract images."
-                        .to_string(),
-            })?;
+        let file_path =
+            document
+                .file_path
+                .as_ref()
+                .ok_or_else(|| ServiceError::InvalidRequest {
+                    message:
+                        "Document has no associated file. Re-upload the document to extract images."
+                            .to_string(),
+                })?;
 
         // Check if it's a PDF
-        let extension = std::path::Path::new(&file_path)
+        let extension = std::path::Path::new(file_path)
             .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase())
@@ -1238,11 +1241,7 @@ When asked about rules or game content, use document_search to find relevant inf
             });
         }
 
-        // Delete existing images first
-        self.delete_document_images(document_id)?;
-
-        let doc_path = std::path::Path::new(&file_path);
-
+        let doc_path = std::path::Path::new(file_path);
         if !doc_path.exists() {
             return Err(ServiceError::InvalidRequest {
                 message:
@@ -1251,51 +1250,30 @@ When asked about rules or game content, use document_search to find relevant inf
             });
         }
 
-        // Extract images
-        let images = self.ingestion.extract_pdf_images(doc_path, document_id)?;
-        let count = images.len();
+        // Delete existing images first
+        self.delete_document_images(document_id)?;
 
-        // Save to database
-        for image in &images {
-            if let Err(e) = self.db.insert_document_image(image) {
-                warn!(image_id = %image.id, error = %e, "Failed to save document image");
-            }
+        // Update metadata with vision model if provided
+        if vision_model.is_some() {
+            let metadata = serde_json::json!({ "vision_model": vision_model });
+            let _ = self
+                .db
+                .update_document_metadata(document_id, Some(metadata));
         }
 
-        // Caption images if vision model is provided
-        if let Some(ref model) = vision_model {
-            info!(
-                total = count,
-                model = %model,
-                "Starting image captioning"
-            );
+        // Queue for processing by setting status back to "processing"
+        // The worker will skip chunking/embedding (already done) and extract images
+        let _ = self
+            .db
+            .update_document_progress(document_id, "extracting_images", 0, 1);
+        let _ = self.db.update_document_processing_status(
+            document_id,
+            ProcessingStatus::Processing,
+            None,
+        );
 
-            for (i, image) in images.iter().enumerate() {
-                info!(progress = i + 1, total = count, "Captioning image");
-
-                let image_path = std::path::Path::new(&image.internal_path);
-                match self.caption_image(image_path, model).await {
-                    Ok(Some(description)) => {
-                        if let Err(e) = self.db.update_image_description(&image.id, &description) {
-                            warn!(image_id = %image.id, error = %e, "Failed to update image description");
-                        } else if let Ok(embedding) = self.search.embed_text(&description).await
-                            && let Err(e) = self.db.insert_image_embedding(&image.id, &embedding)
-                        {
-                            warn!(image_id = %image.id, error = %e, "Failed to store embedding");
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        warn!(image_id = %image.id, error = %e, "Failed to caption image");
-                    }
-                }
-            }
-
-            info!(total = count, "Image captioning complete");
-        }
-
-        info!(document_id = %document_id, count = count, "Re-extracted document images");
-        Ok(count)
+        info!(document_id = %document_id, "Queued document for image re-extraction");
+        Ok(())
     }
 
     /// Caption an image using the specified vision model
