@@ -39,6 +39,10 @@ tokio-stream = "0.1"
 pdfium-render = { version = "0.8", features = ["image", "thread_safe"] }
 image = "0.25"
 
+# PDF image extraction with layer compositing (requires poppler-glib dev package)
+poppler-rs = "0.24"
+cairo-rs = { version = "0.20", features = ["png"] }
+
 # EPUB processing
 epub = "2.1"
 
