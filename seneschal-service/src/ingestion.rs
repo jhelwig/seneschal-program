@@ -163,107 +163,190 @@ impl IngestionService {
 
     /// Extract images from a PDF document and save them as WebP files
     /// Returns a list of DocumentImage records (without descriptions - those are added separately)
+    ///
+    /// Uses the `pdfimages` tool from poppler-utils for reliable image extraction.
     pub fn extract_pdf_images(
         &self,
         path: &Path,
         document_id: &str,
     ) -> ServiceResult<Vec<DocumentImage>> {
-        let pdfium = create_pdfium()?;
-
-        let document =
-            pdfium
-                .load_pdf_from_file(path, None)
-                .map_err(|e| ProcessingError::TextExtraction {
-                    page: 0,
-                    source: Box::new(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("Failed to load PDF: {:?}", e),
-                    )),
-                })?;
-
         // Create images directory for this document
         let images_dir = self.data_dir.join("images").join(document_id);
         std::fs::create_dir_all(&images_dir).map_err(ProcessingError::Io)?;
 
+        // Create temp directory for pdfimages output
+        let temp_dir = tempfile::tempdir().map_err(ProcessingError::Io)?;
+        let temp_prefix = temp_dir.path().join("img");
+
+        // Run pdfimages to extract all images
+        // -all: write images in native format (jpg, png, etc) where possible
+        // -p: include page number in output filename
+        // Usage: pdfimages [options] PDF-file image-root
+        let output = std::process::Command::new("pdfimages")
+            .arg("-all")
+            .arg("-p")
+            .arg(path.to_string_lossy().as_ref())
+            .arg(temp_prefix.to_string_lossy().as_ref())
+            .output()
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    ProcessingError::TextExtraction {
+                        page: 0,
+                        source: Box::new(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "pdfimages not found. Install poppler-utils to enable PDF image extraction.",
+                        )),
+                    }
+                } else {
+                    ProcessingError::Io(e)
+                }
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(error = %stderr, "pdfimages failed");
+            return Err(ServiceError::Processing(ProcessingError::TextExtraction {
+                page: 0,
+                source: Box::new(std::io::Error::other(format!(
+                    "pdfimages failed: {}",
+                    stderr
+                ))),
+            }));
+        }
+
+        // Read extracted files and convert to WebP
         let mut images = Vec::new();
         let now = Utc::now();
 
-        for (page_index, page) in document.pages().iter().enumerate() {
-            let page_num = page_index as i32 + 1;
-            let mut image_index: i32 = 0;
+        let entries: Vec<_> = std::fs::read_dir(temp_dir.path())
+            .map_err(ProcessingError::Io)?
+            .filter_map(|e| e.ok())
+            .collect();
 
-            for object in page.objects().iter() {
-                if let Some(image_object) = object.as_image_object() {
-                    match image_object.get_raw_image() {
-                        Ok(dynamic_image) => {
-                            let image_id = Uuid::new_v4().to_string();
-                            let filename = format!("page_{}_img_{}.webp", page_num, image_index);
-                            let file_path = images_dir.join(&filename);
+        info!(
+            document_id = document_id,
+            extracted_count = entries.len(),
+            "pdfimages extracted files"
+        );
 
-                            // Save as WebP for FVTT optimization
-                            let file = match File::create(&file_path) {
-                                Ok(f) => f,
-                                Err(e) => {
-                                    warn!(
-                                        page = page_num,
-                                        image = image_index,
-                                        error = %e,
-                                        "Failed to create image file"
-                                    );
-                                    continue;
-                                }
-                            };
+        for entry in entries {
+            let entry_path = entry.path();
+            let filename = match entry_path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n,
+                None => continue,
+            };
 
-                            let width = dynamic_image.width();
-                            let height = dynamic_image.height();
-                            let rgba = dynamic_image.to_rgba8();
-
-                            // Use lossless WebP encoding
-                            let encoder = WebPEncoder::new_lossless(file);
-                            if let Err(e) = encoder.write_image(
-                                rgba.as_raw(),
-                                width,
-                                height,
-                                image::ExtendedColorType::Rgba8,
-                            ) {
-                                warn!(
-                                    page = page_num,
-                                    image = image_index,
-                                    error = %e,
-                                    "Failed to encode image as WebP"
-                                );
-                                // Clean up failed file
-                                let _ = std::fs::remove_file(&file_path);
-                                continue;
-                            }
-
-                            images.push(DocumentImage {
-                                id: image_id,
-                                document_id: document_id.to_string(),
-                                page_number: page_num,
-                                image_index,
-                                internal_path: file_path.to_string_lossy().to_string(),
-                                mime_type: "image/webp".to_string(),
-                                width: Some(width),
-                                height: Some(height),
-                                description: None, // Added separately via vision model
-                                created_at: now,
-                            });
-
-                            image_index += 1;
-                        }
-                        Err(e) => {
-                            warn!(
-                                page = page_num,
-                                image = image_index,
-                                error = ?e,
-                                "Failed to extract image"
-                            );
-                        }
-                    }
-                }
+            // Skip soft masks (they're transparency data, not actual images)
+            if filename.contains("-smask") {
+                debug!(filename = filename, "Skipping soft mask");
+                continue;
             }
+
+            // Parse page number and image index from filename
+            // Format: img-NNN-MMM.ext where NNN is page number, MMM is image index
+            let (page_num, image_index) = match parse_pdfimages_filename(filename) {
+                Some((p, i)) => (p, i),
+                None => {
+                    debug!(filename = filename, "Could not parse pdfimages filename");
+                    continue;
+                }
+            };
+
+            // Load the image
+            let img = match image::open(&entry_path) {
+                Ok(i) => i,
+                Err(e) => {
+                    debug!(
+                        filename = filename,
+                        error = %e,
+                        "Failed to load extracted image"
+                    );
+                    continue;
+                }
+            };
+
+            let width = img.width();
+            let height = img.height();
+
+            // Skip images that are too small for vision models (need at least 32x32)
+            const MIN_IMAGE_SIZE: u32 = 32;
+            if width < MIN_IMAGE_SIZE || height < MIN_IMAGE_SIZE {
+                debug!(
+                    page = page_num,
+                    image = image_index,
+                    width = width,
+                    height = height,
+                    "Skipping small image (below {}x{} threshold)",
+                    MIN_IMAGE_SIZE,
+                    MIN_IMAGE_SIZE
+                );
+                continue;
+            }
+
+            // Save as WebP
+            let image_id = Uuid::new_v4().to_string();
+            let webp_filename = format!("page_{}_img_{}.webp", page_num, image_index);
+            let webp_path = images_dir.join(&webp_filename);
+
+            let file = match File::create(&webp_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    warn!(
+                        page = page_num,
+                        image = image_index,
+                        error = %e,
+                        "Failed to create image file"
+                    );
+                    continue;
+                }
+            };
+
+            let rgba = img.to_rgba8();
+            let encoder = WebPEncoder::new_lossless(file);
+            if let Err(e) = encoder.write_image(
+                rgba.as_raw(),
+                width,
+                height,
+                image::ExtendedColorType::Rgba8,
+            ) {
+                warn!(
+                    page = page_num,
+                    image = image_index,
+                    error = %e,
+                    "Failed to encode image as WebP"
+                );
+                let _ = std::fs::remove_file(&webp_path);
+                continue;
+            }
+
+            images.push(DocumentImage {
+                id: image_id,
+                document_id: document_id.to_string(),
+                page_number: page_num,
+                image_index,
+                internal_path: webp_path.to_string_lossy().to_string(),
+                mime_type: "image/webp".to_string(),
+                width: Some(width),
+                height: Some(height),
+                description: None,
+                created_at: now,
+            });
+
+            debug!(
+                page = page_num,
+                image = image_index,
+                width = width,
+                height = height,
+                "Extracted image"
+            );
         }
+
+        // Sort by page number then image index for consistent ordering
+        images.sort_by(|a, b| {
+            a.page_number
+                .cmp(&b.page_number)
+                .then(a.image_index.cmp(&b.image_index))
+        });
 
         info!(
             document_id = document_id,
@@ -526,6 +609,30 @@ fn strip_html_tags(html: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&apos;", "'")
         .replace("&nbsp;", " ")
+}
+
+/// Parse a pdfimages output filename to extract page number and image index
+/// Format: prefix-NNN-MMM.ext where NNN is page number, MMM is image index
+fn parse_pdfimages_filename(filename: &str) -> Option<(i32, i32)> {
+    // Remove extension
+    let stem = filename
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(filename);
+
+    // Split by '-' and get the last two parts (page number and image index)
+    let parts: Vec<&str> = stem.split('-').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+
+    let page_str = parts[parts.len() - 2];
+    let index_str = parts[parts.len() - 1];
+
+    let page_num = page_str.parse::<i32>().ok()?;
+    let image_index = index_str.parse::<i32>().ok()?;
+
+    Some((page_num, image_index))
 }
 
 /// Sanitize a string for use as a filename
