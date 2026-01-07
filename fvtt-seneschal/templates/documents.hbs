@@ -50,17 +50,35 @@
           <th>{{localize "SENESCHAL.Documents.DocumentTitle"}}</th>
           <th>{{localize "SENESCHAL.Documents.AccessLevel"}}</th>
           <th>{{localize "SENESCHAL.Documents.ChunkCount"}}</th>
-          <th></th>
+          <th>{{localize "SENESCHAL.Documents.ImageCount"}}</th>
+          <th>{{localize "SENESCHAL.Documents.Actions"}}</th>
         </tr>
       </thead>
       <tbody>
         {{#each documents}}
-        <tr data-document-id="{{this.id}}">
+        <tr data-document-id="{{this.id}}" class="{{#if (eq ../processingDoc this.id)}}processing{{/if}}">
           <td class="document-title">{{this.title}}</td>
           <td class="document-access">{{this.access_level}}</td>
           <td class="document-chunks">{{this.chunk_count}}</td>
+          <td class="document-images">
+            {{#if (eq ../processingDoc this.id)}}
+            <i class="fas fa-spinner fa-spin"></i>
+            {{else}}
+            {{this.image_count}}
+            {{/if}}
+          </td>
           <td class="document-actions">
-            <button type="button" class="seneschal-delete-doc" title="{{localize 'SENESCHAL.Documents.Delete'}}">
+            {{#if this.isPdf}}
+            <button type="button" class="seneschal-reextract-images" title="{{localize 'SENESCHAL.Documents.ReextractImages'}}" {{#if ../processingDoc}}disabled{{/if}}>
+              <i class="fas fa-sync-alt"></i>
+            </button>
+            {{#if this.image_count}}
+            <button type="button" class="seneschal-delete-images" title="{{localize 'SENESCHAL.Documents.DeleteImages'}}" {{#if ../processingDoc}}disabled{{/if}}>
+              <i class="fas fa-images"></i>
+            </button>
+            {{/if}}
+            {{/if}}
+            <button type="button" class="seneschal-delete-doc" title="{{localize 'SENESCHAL.Documents.Delete'}}" {{#if ../processingDoc}}disabled{{/if}}>
               <i class="fas fa-trash"></i>
             </button>
           </td>

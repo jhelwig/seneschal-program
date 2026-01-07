@@ -565,6 +565,59 @@ class BackendClient {
   }
 
   /**
+   * Get images for a document
+   * @param {string} documentId
+   * @returns {Promise<Object>} Document images response
+   */
+  async getDocumentImages(documentId) {
+    const response = await fetch(`${this.baseUrl}/api/documents/${documentId}/images`, {
+      method: "GET",
+      headers: this.headers,
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to get document images: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  /**
+   * Delete all images for a document
+   * @param {string} documentId
+   * @returns {Promise<Object>} Delete result with count
+   */
+  async deleteDocumentImages(documentId) {
+    const response = await fetch(`${this.baseUrl}/api/documents/${documentId}/images`, {
+      method: "DELETE",
+      headers: this.headers,
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to delete document images: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  /**
+   * Re-extract images from a document
+   * @param {string} documentId
+   * @param {string} [visionModel] - Optional vision model for captioning
+   * @returns {Promise<Object>} Extract result with count
+   */
+  async reextractDocumentImages(documentId, visionModel = null) {
+    const response = await fetch(`${this.baseUrl}/api/documents/${documentId}/images/extract`, {
+      method: "POST",
+      headers: {
+        ...this.headers,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ vision_model: visionModel }),
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to re-extract document images: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  /**
    * List images from the backend
    * @param {Object} params - Query parameters
    * @param {number} [params.user_role] - User role for access filtering
@@ -1073,8 +1126,8 @@ class DocumentManagementDialog extends Application {
       id: "seneschal-documents",
       title: game.i18n.localize("SENESCHAL.Documents.Title"),
       template: `modules/${MODULE_ID}/templates/documents.hbs`,
-      width: 500,
-      height: 600,
+      width: 600,
+      height: 650,
       resizable: true,
       classes: ["seneschal", "seneschal-documents-app"],
     });
@@ -1084,20 +1137,30 @@ class DocumentManagementDialog extends Application {
     super(options);
     this.backendClient = new BackendClient();
     this.documents = [];
+    this.documentImageCounts = {}; // Map of document_id -> image count
     this.isLoading = false;
     this.error = null;
     this.uploadProgress = null;
+    this.processingDoc = null; // Document ID currently being processed
   }
 
   /**
    * Get template data
    */
   getData() {
+    // Enhance documents with image counts
+    const documentsWithImages = this.documents.map((doc) => ({
+      ...doc,
+      image_count: this.documentImageCounts[doc.id] || 0,
+      isPdf: doc.file_path?.toLowerCase().endsWith(".pdf"),
+    }));
+
     return {
-      documents: this.documents,
+      documents: documentsWithImages,
       isLoading: this.isLoading,
       error: this.error,
       uploadProgress: this.uploadProgress,
+      processingDoc: this.processingDoc,
     };
   }
 
@@ -1120,8 +1183,14 @@ class DocumentManagementDialog extends Application {
     // Upload form
     html.find(".seneschal-upload-form").on("submit", this._onUpload.bind(this));
 
-    // Delete buttons
+    // Delete document buttons
     html.find(".seneschal-delete-doc").click(this._onDelete.bind(this));
+
+    // Delete images buttons
+    html.find(".seneschal-delete-images").click(this._onDeleteImages.bind(this));
+
+    // Re-extract images buttons
+    html.find(".seneschal-reextract-images").click(this._onReextractImages.bind(this));
   }
 
   /**
@@ -1140,6 +1209,19 @@ class DocumentManagementDialog extends Application {
 
     try {
       this.documents = await this.backendClient.listDocuments();
+
+      // Load image counts for each document
+      this.documentImageCounts = {};
+      for (const doc of this.documents) {
+        try {
+          const imagesResponse = await this.backendClient.getDocumentImages(doc.id);
+          this.documentImageCounts[doc.id] = imagesResponse.images?.length || 0;
+        } catch {
+          // Silently ignore errors for individual documents
+          this.documentImageCounts[doc.id] = 0;
+        }
+      }
+
       this.isLoading = false;
       this.render(false);
     } catch (error) {
@@ -1243,6 +1325,89 @@ class DocumentManagementDialog extends Application {
         `${game.i18n.localize("SENESCHAL.Documents.DeleteError")}: ${error.message}`,
         { permanent: true }
       );
+    }
+  }
+
+  /**
+   * Handle deleting images for a document
+   */
+  async _onDeleteImages(event) {
+    event.preventDefault();
+
+    const row = event.currentTarget.closest("tr");
+    const documentId = row.dataset.documentId;
+    const title = row.querySelector(".document-title").textContent;
+    const imageCount = this.documentImageCounts[documentId] || 0;
+
+    const confirmed = await Dialog.confirm({
+      title: game.i18n.localize("SENESCHAL.Documents.DeleteImages"),
+      content: `<p>${game.i18n.localize("SENESCHAL.Documents.DeleteImagesConfirm")}</p><p><strong>${title}</strong> (${imageCount} images)</p>`,
+      yes: () => true,
+      no: () => false,
+    });
+
+    if (!confirmed) return;
+
+    try {
+      const result = await this.backendClient.deleteDocumentImages(documentId);
+      ui.notifications.info(
+        `${game.i18n.localize("SENESCHAL.Documents.DeleteImagesSuccess")} (${result.deleted_count} images)`
+      );
+      // Update image count locally
+      this.documentImageCounts[documentId] = 0;
+      this.render(false);
+    } catch (error) {
+      console.error("Delete images failed:", error);
+      ui.notifications.error(
+        `${game.i18n.localize("SENESCHAL.Documents.DeleteImagesError")}: ${error.message}`,
+        { permanent: true }
+      );
+    }
+  }
+
+  /**
+   * Handle re-extracting images from a document
+   */
+  async _onReextractImages(event) {
+    event.preventDefault();
+
+    const row = event.currentTarget.closest("tr");
+    const documentId = row.dataset.documentId;
+    const title = row.querySelector(".document-title").textContent;
+
+    const confirmed = await Dialog.confirm({
+      title: game.i18n.localize("SENESCHAL.Documents.ReextractImages"),
+      content: `<p>${game.i18n.localize("SENESCHAL.Documents.ReextractImagesConfirm")}</p><p><strong>${title}</strong></p><p><em>${game.i18n.localize("SENESCHAL.Documents.ReextractImagesNote")}</em></p>`,
+      yes: () => true,
+      no: () => false,
+    });
+
+    if (!confirmed) return;
+
+    this.processingDoc = documentId;
+    this.render(false);
+
+    try {
+      // Get vision model from settings
+      const visionModel = getSetting(SETTINGS.VISION_MODEL);
+      const result = await this.backendClient.reextractDocumentImages(
+        documentId,
+        visionModel || null
+      );
+      ui.notifications.info(
+        `${game.i18n.localize("SENESCHAL.Documents.ReextractImagesSuccess")} (${result.extracted_count} images)`
+      );
+      // Update image count locally
+      this.documentImageCounts[documentId] = result.extracted_count;
+    } catch (error) {
+      console.error("Re-extract images failed:", error);
+      ui.notifications.error(
+        `${game.i18n.localize("SENESCHAL.Documents.ReextractImagesError")}: ${error.message}`,
+        { permanent: true }
+      );
+    } finally {
+      this.processingDoc = null;
+      this.render(false);
     }
   }
 }

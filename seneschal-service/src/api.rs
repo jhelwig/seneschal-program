@@ -66,6 +66,14 @@ pub fn router(service: Arc<SeneschalService>, config: &AppConfig) -> Router {
         .route("/documents/{id}", get(get_document_handler))
         .route("/documents/{id}", delete(delete_document_handler))
         .route("/documents/{id}/images", get(get_document_images_handler))
+        .route(
+            "/documents/{id}/images",
+            delete(delete_document_images_handler),
+        )
+        .route(
+            "/documents/{id}/images/extract",
+            post(reextract_document_images_handler),
+        )
         // Search endpoint
         .route("/search", post(search_handler))
         // Image endpoints
@@ -445,6 +453,61 @@ async fn delete_document_handler(
 #[derive(Serialize)]
 struct DeleteResponse {
     success: bool,
+    message: String,
+}
+
+/// Delete all images for a document
+async fn delete_document_images_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<DeleteImagesResponse>, I18nError> {
+    let count = state
+        .service
+        .delete_document_images(&id)
+        .map_err(|e| state.i18n_error(e))?;
+
+    Ok(Json(DeleteImagesResponse {
+        success: true,
+        deleted_count: count,
+        message: format!("Deleted {} images", count),
+    }))
+}
+
+#[derive(Serialize)]
+struct DeleteImagesResponse {
+    success: bool,
+    deleted_count: usize,
+    message: String,
+}
+
+/// Re-extract images from a document
+async fn reextract_document_images_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<ReextractImagesRequest>,
+) -> Result<Json<ReextractImagesResponse>, I18nError> {
+    let count = state
+        .service
+        .reextract_document_images(&id, request.vision_model)
+        .await
+        .map_err(|e| state.i18n_error(e))?;
+
+    Ok(Json(ReextractImagesResponse {
+        success: true,
+        extracted_count: count,
+        message: format!("Extracted {} images", count),
+    }))
+}
+
+#[derive(Deserialize)]
+struct ReextractImagesRequest {
+    vision_model: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ReextractImagesResponse {
+    success: bool,
+    extracted_count: usize,
     message: String,
 }
 

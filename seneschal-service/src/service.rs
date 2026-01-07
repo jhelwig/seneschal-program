@@ -928,8 +928,23 @@ When asked about rules or game content, use document_search to find relevant inf
             0
         };
 
-        // Clean up temp file
-        let _ = std::fs::remove_file(&temp_path);
+        // Move document file to permanent storage for re-extraction support
+        let docs_dir = self.config.storage.data_dir.join("documents");
+        std::fs::create_dir_all(&docs_dir)
+            .map_err(|e| ServiceError::Processing(crate::error::ProcessingError::Io(e)))?;
+
+        let permanent_path = docs_dir.join(format!("{}_{}", document.id, filename));
+        std::fs::rename(&temp_path, &permanent_path)
+            .or_else(|_| {
+                // rename may fail across filesystems, fall back to copy+delete
+                std::fs::copy(&temp_path, &permanent_path)?;
+                std::fs::remove_file(&temp_path)
+            })
+            .map_err(|e| ServiceError::Processing(crate::error::ProcessingError::Io(e)))?;
+
+        // Update document file_path in database
+        self.db
+            .update_document_file_path(&document.id, &permanent_path.to_string_lossy())?;
 
         info!(
             doc_id = %document.id,
@@ -958,6 +973,118 @@ When asked about rules or game content, use document_search to find relevant inf
         document_id: &str,
     ) -> ServiceResult<Vec<crate::db::DocumentImage>> {
         self.db.get_document_images(document_id)
+    }
+
+    /// Delete all images for a document
+    pub fn delete_document_images(&self, document_id: &str) -> ServiceResult<usize> {
+        // Get paths and delete from database
+        let paths = self.db.delete_document_images(document_id)?;
+        let count = paths.len();
+
+        // Delete the image files
+        for path in paths {
+            if let Err(e) = std::fs::remove_file(&path) {
+                warn!(path = %path, error = %e, "Failed to delete image file");
+            }
+        }
+
+        // Try to remove the images directory for this document
+        let images_dir = self
+            .config
+            .storage
+            .data_dir
+            .join("images")
+            .join(document_id);
+        let _ = std::fs::remove_dir(&images_dir); // Ignore error if not empty or doesn't exist
+
+        info!(document_id = %document_id, count = count, "Deleted document images");
+        Ok(count)
+    }
+
+    /// Re-extract images from a document
+    pub async fn reextract_document_images(
+        &self,
+        document_id: &str,
+        vision_model: Option<String>,
+    ) -> ServiceResult<usize> {
+        // Get the document to find the original file
+        let document =
+            self.db
+                .get_document(document_id)?
+                .ok_or_else(|| ServiceError::DocumentNotFound {
+                    document_id: document_id.to_string(),
+                })?;
+
+        // Get the file path
+        let file_path = document
+            .file_path
+            .ok_or_else(|| ServiceError::InvalidRequest {
+                message:
+                    "Document has no associated file. Re-upload the document to extract images."
+                        .to_string(),
+            })?;
+
+        // Check if it's a PDF
+        let extension = std::path::Path::new(&file_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+
+        if extension != "pdf" {
+            return Err(ServiceError::InvalidRequest {
+                message: "Image extraction is only supported for PDF documents".to_string(),
+            });
+        }
+
+        // Delete existing images first
+        self.delete_document_images(document_id)?;
+
+        let doc_path = std::path::Path::new(&file_path);
+
+        if !doc_path.exists() {
+            return Err(ServiceError::InvalidRequest {
+                message:
+                    "Original document file not found. Re-upload the document to extract images."
+                        .to_string(),
+            });
+        }
+
+        // Extract images
+        let images = self.ingestion.extract_pdf_images(doc_path, document_id)?;
+        let count = images.len();
+
+        // Save to database
+        for image in &images {
+            if let Err(e) = self.db.insert_document_image(image) {
+                warn!(image_id = %image.id, error = %e, "Failed to save document image");
+            }
+        }
+
+        // Caption images if vision model is provided
+        if let Some(ref model) = vision_model {
+            for image in &images {
+                let image_path = std::path::Path::new(&image.internal_path);
+                match self.caption_image(image_path, model).await {
+                    Ok(Some(description)) => {
+                        if let Err(e) = self.db.update_image_description(&image.id, &description) {
+                            warn!(image_id = %image.id, error = %e, "Failed to update image description");
+                        } else if let Ok(embedding) = self.search.embed_text(&description).await
+                            && let Err(e) = self.db.insert_image_embedding(&image.id, &embedding)
+                        {
+                            warn!(image_id = %image.id, error = %e, "Failed to store embedding");
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        warn!(image_id = %image.id, error = %e, "Failed to caption image");
+                    }
+                }
+            }
+        }
+
+        info!(document_id = %document_id, count = count, "Re-extracted document images");
+        Ok(count)
     }
 
     /// Caption an image using the specified vision model

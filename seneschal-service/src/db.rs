@@ -835,6 +835,49 @@ impl Database {
 
         Ok(rows > 0)
     }
+
+    /// Delete all images for a document (returns the internal paths for file cleanup)
+    pub fn delete_document_images(&self, document_id: &str) -> ServiceResult<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+
+        // First get the internal paths so we can delete the files
+        let mut stmt = conn
+            .prepare("SELECT internal_path FROM document_images WHERE document_id = ?1")
+            .map_err(DatabaseError::Query)?;
+
+        let paths: Vec<String> = stmt
+            .query_map(params![document_id], |row| row.get(0))
+            .map_err(DatabaseError::Query)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::Query)?;
+
+        // Delete the database records (embeddings will cascade delete)
+        conn.execute(
+            "DELETE FROM document_images WHERE document_id = ?1",
+            params![document_id],
+        )
+        .map_err(DatabaseError::Query)?;
+
+        Ok(paths)
+    }
+
+    /// Update the file path for a document
+    pub fn update_document_file_path(
+        &self,
+        document_id: &str,
+        file_path: &str,
+    ) -> ServiceResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let rows = conn
+            .execute(
+                "UPDATE documents SET file_path = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![file_path, document_id],
+            )
+            .map_err(DatabaseError::Query)?;
+
+        Ok(rows > 0)
+    }
 }
 
 /// Calculate cosine similarity between two vectors
