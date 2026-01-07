@@ -48,7 +48,7 @@
       <thead>
         <tr>
           <th>{{localize "SENESCHAL.Documents.DocumentTitle"}}</th>
-          <th>{{localize "SENESCHAL.Documents.AccessLevel"}}</th>
+          <th>{{localize "SENESCHAL.Documents.Status"}}</th>
           <th>{{localize "SENESCHAL.Documents.ChunkCount"}}</th>
           <th>{{localize "SENESCHAL.Documents.ImageCount"}}</th>
           <th>{{localize "SENESCHAL.Documents.Actions"}}</th>
@@ -56,9 +56,41 @@
       </thead>
       <tbody>
         {{#each documents}}
-        <tr data-document-id="{{this.id}}" class="{{#if (eq ../processingDoc this.id)}}processing{{/if}}">
-          <td class="document-title">{{this.title}}</td>
-          <td class="document-access">{{this.access_level}}</td>
+        <tr data-document-id="{{this.id}}" class="{{#if (eq this.processing_status 'processing')}}processing{{else if (eq this.processing_status 'failed')}}failed{{/if}} {{#if (eq ../processingDoc this.id)}}reprocessing{{/if}}">
+          <td class="document-title">
+            {{this.title}}
+            {{#if this.processing_error}}
+            <div class="document-error" title="{{this.processing_error}}">
+              <i class="fas fa-exclamation-circle"></i>
+            </div>
+            {{/if}}
+          </td>
+          <td class="document-status">
+            {{#if (eq this.processing_status 'processing')}}
+            <i class="fas fa-spinner fa-spin"></i>
+            {{#if this.processing_phase}}
+              {{#if (eq this.processing_phase 'queued')}}
+                {{localize "SENESCHAL.Documents.PhaseQueued"}}
+              {{else if (eq this.processing_phase 'chunking')}}
+                {{localize "SENESCHAL.Documents.PhaseChunking"}}
+              {{else if (eq this.processing_phase 'embedding')}}
+                {{localize "SENESCHAL.Documents.PhaseEmbedding"}} ({{this.processing_progress}}/{{this.processing_total}})
+              {{else if (eq this.processing_phase 'extracting_images')}}
+                {{localize "SENESCHAL.Documents.PhaseExtractingImages"}}
+              {{else if (eq this.processing_phase 'captioning')}}
+                {{localize "SENESCHAL.Documents.PhaseCaptioning"}} ({{this.processing_progress}}/{{this.processing_total}})
+              {{else}}
+                {{this.processing_phase}}
+              {{/if}}
+            {{else}}
+              {{localize "SENESCHAL.Documents.StatusProcessing"}}
+            {{/if}}
+            {{else if (eq this.processing_status 'failed')}}
+            <i class="fas fa-times-circle"></i> {{localize "SENESCHAL.Documents.StatusFailed"}}
+            {{else}}
+            <i class="fas fa-check-circle"></i> {{localize "SENESCHAL.Documents.StatusCompleted"}}
+            {{/if}}
+          </td>
           <td class="document-chunks">{{this.chunk_count}}</td>
           <td class="document-images">
             {{#if (eq ../processingDoc this.id)}}
@@ -69,11 +101,11 @@
           </td>
           <td class="document-actions">
             {{#if this.isPdf}}
-            <button type="button" class="seneschal-reextract-images" title="{{localize 'SENESCHAL.Documents.ReextractImages'}}" {{#if ../processingDoc}}disabled{{/if}}>
+            <button type="button" class="seneschal-reextract-images" title="{{localize 'SENESCHAL.Documents.ReextractImages'}}" {{#if ../processingDoc}}disabled{{/if}} {{#if (eq this.processing_status 'processing')}}disabled{{/if}}>
               <i class="fas fa-sync-alt"></i>
             </button>
             {{#if this.image_count}}
-            <button type="button" class="seneschal-delete-images" title="{{localize 'SENESCHAL.Documents.DeleteImages'}}" {{#if ../processingDoc}}disabled{{/if}}>
+            <button type="button" class="seneschal-delete-images" title="{{localize 'SENESCHAL.Documents.DeleteImages'}}" {{#if ../processingDoc}}disabled{{/if}} {{#if (eq this.processing_status 'processing')}}disabled{{/if}}>
               <i class="fas fa-images"></i>
             </button>
             {{/if}}

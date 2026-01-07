@@ -1137,26 +1137,25 @@ class DocumentManagementDialog extends Application {
     super(options);
     this.backendClient = new BackendClient();
     this.documents = [];
-    this.documentImageCounts = {}; // Map of document_id -> image count
     this.isLoading = false;
     this.error = null;
     this.uploadProgress = null;
-    this.processingDoc = null; // Document ID currently being processed
+    this.processingDoc = null; // Document ID currently being re-processed (images)
+    this._pollTimer = null; // Timer for auto-refresh when documents are processing
   }
 
   /**
    * Get template data
    */
   getData() {
-    // Enhance documents with image counts
-    const documentsWithImages = this.documents.map((doc) => ({
+    // Enhance documents with isPdf flag
+    const documentsEnhanced = this.documents.map((doc) => ({
       ...doc,
-      image_count: this.documentImageCounts[doc.id] || 0,
       isPdf: doc.file_path?.toLowerCase().endsWith(".pdf"),
     }));
 
     return {
-      documents: documentsWithImages,
+      documents: documentsEnhanced,
       isLoading: this.isLoading,
       error: this.error,
       uploadProgress: this.uploadProgress,
@@ -1209,27 +1208,54 @@ class DocumentManagementDialog extends Application {
 
     try {
       this.documents = await this.backendClient.listDocuments();
-
-      // Load image counts for each document
-      this.documentImageCounts = {};
-      for (const doc of this.documents) {
-        try {
-          const imagesResponse = await this.backendClient.getDocumentImages(doc.id);
-          this.documentImageCounts[doc.id] = imagesResponse.images?.length || 0;
-        } catch {
-          // Silently ignore errors for individual documents
-          this.documentImageCounts[doc.id] = 0;
-        }
-      }
-
       this.isLoading = false;
       this.render(false);
+
+      // If any documents are still processing, start auto-refresh
+      this._startProcessingPoll();
     } catch (error) {
       console.error("Failed to load documents:", error);
       this.isLoading = false;
       this.error = error.message;
       this.render(false);
     }
+  }
+
+  /**
+   * Start polling for document processing status updates
+   */
+  _startProcessingPoll() {
+    // Clear any existing timer
+    if (this._pollTimer) {
+      clearTimeout(this._pollTimer);
+      this._pollTimer = null;
+    }
+
+    // Check if any documents are processing
+    const hasProcessing = this.documents.some((doc) => doc.processing_status === "processing");
+    if (!hasProcessing) return;
+
+    // Poll every 5 seconds
+    this._pollTimer = setTimeout(async () => {
+      try {
+        this.documents = await this.backendClient.listDocuments();
+        this.render(false);
+        this._startProcessingPoll(); // Continue polling if still processing
+      } catch (error) {
+        console.error("Failed to refresh documents:", error);
+      }
+    }, 5000);
+  }
+
+  /**
+   * Stop polling when dialog closes
+   */
+  close(options) {
+    if (this._pollTimer) {
+      clearTimeout(this._pollTimer);
+      this._pollTimer = null;
+    }
+    return super.close(options);
   }
 
   /**
@@ -1336,8 +1362,9 @@ class DocumentManagementDialog extends Application {
 
     const row = event.currentTarget.closest("tr");
     const documentId = row.dataset.documentId;
-    const title = row.querySelector(".document-title").textContent;
-    const imageCount = this.documentImageCounts[documentId] || 0;
+    const title = row.querySelector(".document-title").textContent.trim();
+    const doc = this.documents.find((d) => d.id === documentId);
+    const imageCount = doc?.image_count || 0;
 
     const confirmed = await Dialog.confirm({
       title: game.i18n.localize("SENESCHAL.Documents.DeleteImages"),
@@ -1353,9 +1380,8 @@ class DocumentManagementDialog extends Application {
       ui.notifications.info(
         `${game.i18n.localize("SENESCHAL.Documents.DeleteImagesSuccess")} (${result.deleted_count} images)`
       );
-      // Update image count locally
-      this.documentImageCounts[documentId] = 0;
-      this.render(false);
+      // Reload documents to get updated counts
+      await this._loadDocuments();
     } catch (error) {
       console.error("Delete images failed:", error);
       ui.notifications.error(
@@ -1397,8 +1423,8 @@ class DocumentManagementDialog extends Application {
       ui.notifications.info(
         `${game.i18n.localize("SENESCHAL.Documents.ReextractImagesSuccess")} (${result.extracted_count} images)`
       );
-      // Update image count locally
-      this.documentImageCounts[documentId] = result.extracted_count;
+      // Reload documents to get updated counts
+      await this._loadDocuments();
     } catch (error) {
       console.error("Re-extract images failed:", error);
       ui.notifications.error(

@@ -49,6 +49,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         app = app.nest(&mcp_path, mcp::mcp_router(service.clone()));
     }
 
+    // Start document processing worker (resumes any pending documents)
+    SeneschalService::start_document_processing_worker(service.clone());
+
     // Start conversation cleanup background task
     let cleanup_service = service.clone();
     let cleanup_interval = config.conversation.cleanup_interval();

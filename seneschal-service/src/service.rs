@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::config::AppConfig;
 use crate::db::{
     Conversation, ConversationMessage, ConversationMetadata, Database, Document, MessageRole,
-    ToolCallRecord, ToolResultRecord,
+    ProcessingStatus, ToolCallRecord, ToolResultRecord,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::i18n::I18n;
@@ -789,7 +789,11 @@ When asked about rules or game content, use document_search to find relevant inf
         Ok(rx)
     }
 
-    /// Upload and process a document
+    /// Upload a document and enqueue it for processing
+    ///
+    /// This method saves the file and creates a document record with "processing"
+    /// status. The document processing worker will pick it up and process it.
+    /// Clients should poll the document status for completion.
     pub async fn upload_document(
         &self,
         content: &[u8],
@@ -809,152 +813,349 @@ When asked about rules or game content, use document_search to find relevant inf
             ));
         }
 
-        // Save to temp file for processing
-        let temp_dir = self.config.storage.data_dir.join("temp");
-        std::fs::create_dir_all(&temp_dir)
+        // Generate document ID
+        let doc_id = uuid::Uuid::new_v4().to_string();
+
+        // Save file to permanent storage immediately
+        let docs_dir = self.config.storage.data_dir.join("documents");
+        std::fs::create_dir_all(&docs_dir)
             .map_err(|e| ServiceError::Processing(crate::error::ProcessingError::Io(e)))?;
 
-        let temp_path = temp_dir.join(filename);
-        std::fs::write(&temp_path, content)
+        let permanent_path = docs_dir.join(format!("{}_{}", doc_id, filename));
+        std::fs::write(&permanent_path, content)
             .map_err(|e| ServiceError::Processing(crate::error::ProcessingError::Io(e)))?;
 
-        // Process document
-        let (document, chunks) =
-            self.ingestion
-                .process_document(&temp_path, title, access_level, tags)?;
+        // Store vision model in metadata if provided
+        let metadata = vision_model.map(|vm| serde_json::json!({ "vision_model": vm }));
 
-        // Save document to database
+        // Create document record with "processing" status
+        let now = chrono::Utc::now();
+        let document = Document {
+            id: doc_id.clone(),
+            title: title.to_string(),
+            file_path: Some(permanent_path.to_string_lossy().to_string()),
+            file_hash: None,
+            access_level,
+            tags: tags.clone(),
+            metadata,
+            processing_status: ProcessingStatus::Processing,
+            processing_error: None,
+            chunk_count: 0,
+            image_count: 0,
+            processing_phase: Some("queued".to_string()),
+            processing_progress: None,
+            processing_total: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        // Save document to database (enqueue for processing)
         self.db.insert_document(&document)?;
 
-        // Save chunks
-        for chunk in &chunks {
-            self.db.insert_chunk(chunk)?;
+        info!(
+            doc_id = %doc_id,
+            title = %title,
+            "Document uploaded and queued for processing"
+        );
+
+        Ok(document)
+    }
+
+    /// Start the document processing worker
+    /// This should be called once on server startup
+    pub fn start_document_processing_worker(service: Arc<SeneschalService>) {
+        tokio::spawn(async move {
+            info!("Document processing worker started");
+            loop {
+                // Check for pending documents
+                match service.db.get_next_pending_document() {
+                    Ok(Some(doc)) => {
+                        info!(doc_id = %doc.id, title = %doc.title, "Processing queued document");
+                        service.process_document(&doc).await;
+                    }
+                    Ok(None) => {
+                        // No pending documents, sleep before checking again
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Failed to check for pending documents");
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Process a single document (called by the worker)
+    /// This method is resumable - it checks what's already been done and continues from there.
+    async fn process_document(&self, document: &Document) {
+        let doc_id = &document.id;
+        let title = &document.title;
+
+        let file_path = match &document.file_path {
+            Some(p) => std::path::PathBuf::from(p),
+            None => {
+                error!(doc_id = %doc_id, "Document has no file path");
+                let _ = self.db.update_document_processing_status(
+                    doc_id,
+                    ProcessingStatus::Failed,
+                    Some("Document has no file path"),
+                );
+                return;
+            }
+        };
+
+        let filename = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("document")
+            .to_string();
+
+        // Extract vision model from metadata if present
+        let vision_model = document
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("vision_model"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        info!(doc_id = %doc_id, "Resuming/starting document processing");
+
+        // Step 1: Check if chunks exist, if not extract text and create chunks
+        let existing_chunk_count = self.db.get_chunk_count(doc_id).unwrap_or(0);
+        if existing_chunk_count == 0 {
+            info!(doc_id = %doc_id, "Extracting text and creating chunks");
+            let _ = self.db.update_document_progress(doc_id, "chunking", 0, 1);
+
+            let chunks = match self.ingestion.process_document_with_id(
+                &file_path,
+                doc_id,
+                title,
+                document.access_level,
+                document.tags.clone(),
+            ) {
+                Ok(chunks) => chunks,
+                Err(e) => {
+                    error!(doc_id = %doc_id, error = %e, "Document text extraction failed");
+                    let _ = self.db.update_document_processing_status(
+                        doc_id,
+                        ProcessingStatus::Failed,
+                        Some(&e.to_string()),
+                    );
+                    return;
+                }
+            };
+
+            // Save chunks
+            for chunk in &chunks {
+                if let Err(e) = self.db.insert_chunk(chunk) {
+                    warn!(chunk_id = %chunk.id, error = %e, "Failed to save chunk");
+                }
+            }
+
+            info!(doc_id = %doc_id, chunks = chunks.len(), "Chunks created");
+        } else {
+            info!(doc_id = %doc_id, chunks = existing_chunk_count, "Chunks already exist, skipping text extraction");
         }
 
-        // Index chunks
-        self.search.index_chunks(&chunks).await?;
+        // Step 2: Index chunks that don't have embeddings yet
+        let chunks_to_embed = match self.db.get_chunks_without_embeddings(doc_id) {
+            Ok(chunks) => chunks,
+            Err(e) => {
+                error!(doc_id = %doc_id, error = %e, "Failed to get chunks without embeddings");
+                let _ = self.db.update_document_processing_status(
+                    doc_id,
+                    ProcessingStatus::Failed,
+                    Some(&format!("Failed to query chunks: {}", e)),
+                );
+                return;
+            }
+        };
 
-        // Extract images from PDFs
-        let extension = std::path::Path::new(filename)
+        if !chunks_to_embed.is_empty() {
+            let total_chunks = self.db.get_chunk_count(doc_id).unwrap_or(0);
+            let already_embedded = total_chunks - chunks_to_embed.len();
+            info!(
+                doc_id = %doc_id,
+                remaining = chunks_to_embed.len(),
+                already_embedded = already_embedded,
+                total = total_chunks,
+                "Generating embeddings for remaining chunks"
+            );
+            let _ = self.db.update_document_progress(
+                doc_id,
+                "embedding",
+                already_embedded,
+                total_chunks,
+            );
+
+            if let Err(e) = self.search.index_chunks(&chunks_to_embed).await {
+                error!(doc_id = %doc_id, error = %e, "Failed to index chunks");
+                let _ = self.db.update_document_processing_status(
+                    doc_id,
+                    ProcessingStatus::Failed,
+                    Some(&format!("Embedding generation failed: {}", e)),
+                );
+                return;
+            }
+        } else {
+            info!(doc_id = %doc_id, "All chunks already have embeddings");
+        }
+
+        // Step 3: Extract images from PDFs if not already done
+        let extension = std::path::Path::new(&filename)
             .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase())
             .unwrap_or_default();
 
-        let image_count = if extension == "pdf" {
-            match self.ingestion.extract_pdf_images(&temp_path, &document.id) {
-                Ok(images) => {
-                    let count = images.len();
-                    for image in &images {
-                        if let Err(e) = self.db.insert_document_image(image) {
-                            warn!(
-                                image_id = %image.id,
-                                error = %e,
-                                "Failed to save document image to database"
-                            );
-                        }
-                    }
+        if extension == "pdf" {
+            // Check if images already exist
+            let existing_images = self.db.get_document_images(doc_id).unwrap_or_default();
+            let mut image_count = existing_images.len();
 
-                    // Caption images if vision model is provided
-                    if let Some(ref model) = vision_model {
+            if image_count == 0 {
+                info!(doc_id = %doc_id, "Extracting images from PDF");
+                let _ = self
+                    .db
+                    .update_document_progress(doc_id, "extracting_images", 0, 1);
+                match self.ingestion.extract_pdf_images(&file_path, doc_id) {
+                    Ok(images) => {
+                        image_count = images.len();
                         for image in &images {
-                            let image_path = std::path::Path::new(&image.internal_path);
-                            match self.caption_image(image_path, model).await {
-                                Ok(Some(description)) => {
-                                    // Update the image description
-                                    if let Err(e) =
-                                        self.db.update_image_description(&image.id, &description)
-                                    {
-                                        warn!(
-                                            image_id = %image.id,
-                                            error = %e,
-                                            "Failed to update image description"
-                                        );
-                                    } else {
-                                        // Generate and store embedding for the description
-                                        match self.search.embed_text(&description).await {
-                                            Ok(embedding) => {
-                                                if let Err(e) = self
-                                                    .db
-                                                    .insert_image_embedding(&image.id, &embedding)
-                                                {
-                                                    warn!(
-                                                        image_id = %image.id,
-                                                        error = %e,
-                                                        "Failed to store image embedding"
-                                                    );
-                                                }
-                                            }
-                                            Err(e) => {
-                                                warn!(
-                                                    image_id = %image.id,
-                                                    error = %e,
-                                                    "Failed to generate image embedding"
-                                                );
-                                            }
-                                        }
-                                        debug!(
-                                            image_id = %image.id,
-                                            description_len = description.len(),
-                                            "Image captioned successfully"
-                                        );
-                                    }
-                                }
-                                Ok(None) => {
-                                    // No vision model configured (shouldn't happen given outer check)
-                                }
-                                Err(e) => {
+                            if let Err(e) = self.db.insert_document_image(image) {
+                                warn!(
+                                    image_id = %image.id,
+                                    error = %e,
+                                    "Failed to save document image to database"
+                                );
+                            }
+                        }
+                        info!(doc_id = %doc_id, images = image_count, "Images extracted");
+                    }
+                    Err(e) => {
+                        warn!(doc_id = %doc_id, error = %e, "Failed to extract images from PDF");
+                    }
+                }
+            } else {
+                info!(doc_id = %doc_id, images = image_count, "Images already exist, skipping extraction");
+            }
+
+            // Step 4: Caption images that don't have descriptions yet
+            if let Some(ref model) = vision_model {
+                let images_to_caption = self
+                    .db
+                    .get_images_without_descriptions(doc_id)
+                    .unwrap_or_default();
+
+                if !images_to_caption.is_empty() {
+                    let total_images = image_count;
+                    let already_captioned = total_images - images_to_caption.len();
+                    info!(
+                        doc_id = %doc_id,
+                        remaining = images_to_caption.len(),
+                        already_captioned = already_captioned,
+                        total = total_images,
+                        model = %model,
+                        "Captioning remaining images"
+                    );
+
+                    for (i, image) in images_to_caption.iter().enumerate() {
+                        let current_progress = already_captioned + i + 1;
+                        let _ = self.db.update_document_progress(
+                            doc_id,
+                            "captioning",
+                            current_progress,
+                            total_images,
+                        );
+                        info!(
+                            doc_id = %doc_id,
+                            progress = current_progress,
+                            total = total_images,
+                            "Captioning image"
+                        );
+
+                        let image_path = std::path::Path::new(&image.internal_path);
+                        match self.caption_image(image_path, model).await {
+                            Ok(Some(description)) => {
+                                if let Err(e) =
+                                    self.db.update_image_description(&image.id, &description)
+                                {
                                     warn!(
                                         image_id = %image.id,
                                         error = %e,
-                                        "Failed to caption image"
+                                        "Failed to update image description"
+                                    );
+                                } else {
+                                    // Generate and store embedding for the description
+                                    match self.search.embed_text(&description).await {
+                                        Ok(embedding) => {
+                                            if let Err(e) = self
+                                                .db
+                                                .insert_image_embedding(&image.id, &embedding)
+                                            {
+                                                warn!(
+                                                    image_id = %image.id,
+                                                    error = %e,
+                                                    "Failed to store image embedding"
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                image_id = %image.id,
+                                                error = %e,
+                                                "Failed to generate image embedding"
+                                            );
+                                        }
+                                    }
+                                    debug!(
+                                        image_id = %image.id,
+                                        description_len = description.len(),
+                                        "Image captioned successfully"
                                     );
                                 }
                             }
+                            Ok(None) => {}
+                            Err(e) => {
+                                warn!(
+                                    image_id = %image.id,
+                                    error = %e,
+                                    "Failed to caption image"
+                                );
+                            }
                         }
                     }
-                    count
-                }
-                Err(e) => {
-                    warn!(
-                        doc_id = %document.id,
-                        error = %e,
-                        "Failed to extract images from PDF"
-                    );
-                    0
+
+                    info!(doc_id = %doc_id, "Image captioning complete");
+                } else {
+                    info!(doc_id = %doc_id, "All images already captioned");
                 }
             }
-        } else {
-            0
-        };
+        }
 
-        // Move document file to permanent storage for re-extraction support
-        let docs_dir = self.config.storage.data_dir.join("documents");
-        std::fs::create_dir_all(&docs_dir)
-            .map_err(|e| ServiceError::Processing(crate::error::ProcessingError::Io(e)))?;
-
-        let permanent_path = docs_dir.join(format!("{}_{}", document.id, filename));
-        std::fs::rename(&temp_path, &permanent_path)
-            .or_else(|_| {
-                // rename may fail across filesystems, fall back to copy+delete
-                std::fs::copy(&temp_path, &permanent_path)?;
-                std::fs::remove_file(&temp_path)
-            })
-            .map_err(|e| ServiceError::Processing(crate::error::ProcessingError::Io(e)))?;
-
-        // Update document file_path in database
-        self.db
-            .update_document_file_path(&document.id, &permanent_path.to_string_lossy())?;
+        // Update document with final counts and status
+        let total_chunks = self.db.get_chunk_count(doc_id).unwrap_or(0);
+        let total_images = self
+            .db
+            .get_document_images(doc_id)
+            .map(|i| i.len())
+            .unwrap_or(0);
+        let _ = self
+            .db
+            .update_document_counts(doc_id, total_chunks, total_images);
+        let _ = self.db.clear_document_progress(doc_id);
+        let _ =
+            self.db
+                .update_document_processing_status(doc_id, ProcessingStatus::Completed, None);
 
         info!(
-            doc_id = %document.id,
-            title = %document.title,
-            chunks = chunks.len(),
-            images = image_count,
-            "Document uploaded and indexed"
+            doc_id = %doc_id,
+            title = %title,
+            chunks = total_chunks,
+            images = total_images,
+            "Document processing complete"
         );
-
-        Ok(document)
     }
 
     /// List documents
@@ -1063,7 +1264,15 @@ When asked about rules or game content, use document_search to find relevant inf
 
         // Caption images if vision model is provided
         if let Some(ref model) = vision_model {
-            for image in &images {
+            info!(
+                total = count,
+                model = %model,
+                "Starting image captioning"
+            );
+
+            for (i, image) in images.iter().enumerate() {
+                info!(progress = i + 1, total = count, "Captioning image");
+
                 let image_path = std::path::Path::new(&image.internal_path);
                 match self.caption_image(image_path, model).await {
                     Ok(Some(description)) => {
@@ -1081,6 +1290,8 @@ When asked about rules or game content, use document_search to find relevant inf
                     }
                 }
             }
+
+            info!(total = count, "Image captioning complete");
         }
 
         info!(document_id = %document_id, count = count, "Re-extracted document images");

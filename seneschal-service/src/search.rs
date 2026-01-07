@@ -144,13 +144,26 @@ impl SearchService {
             return Ok(());
         }
 
+        let total = chunks.len();
+        info!(total = total, "Starting embedding generation");
+
         // Generate embeddings for all chunks
-        for chunk in chunks {
+        for (i, chunk) in chunks.iter().enumerate() {
             let embedding = self.embed_text(&chunk.content).await?;
             self.db.insert_embedding(&chunk.id, &embedding)?;
+
+            // Log progress every 10 chunks or at completion
+            if (i + 1) % 10 == 0 || i + 1 == total {
+                info!(
+                    progress = i + 1,
+                    total = total,
+                    percent = ((i + 1) * 100) / total,
+                    "Generating embeddings"
+                );
+            }
         }
 
-        debug!(chunks = chunks.len(), "Indexed chunks");
+        info!(chunks = total, "Embedding generation complete");
 
         Ok(())
     }

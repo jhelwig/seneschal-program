@@ -3,13 +3,12 @@ use image::ImageEncoder;
 use image::codecs::webp::WebPEncoder;
 use pdfium_render::prelude::*;
 use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::config::EmbeddingsConfig;
-use crate::db::{Chunk, Document, DocumentImage};
+use crate::db::{Chunk, DocumentImage};
 use crate::error::{ProcessingError, ServiceError, ServiceResult};
 use crate::tools::AccessLevel;
 
@@ -54,21 +53,23 @@ impl IngestionService {
         }
     }
 
-    /// Process a document and return chunks
-    pub fn process_document(
+    /// Process a document with a pre-generated document ID, returning only chunks
+    /// Used for async document processing where the Document record is created first
+    pub fn process_document_with_id(
         &self,
         path: &Path,
-        title: &str,
+        doc_id: &str,
+        _title: &str,
         access_level: AccessLevel,
         tags: Vec<String>,
-    ) -> ServiceResult<(Document, Vec<Chunk>)> {
+    ) -> ServiceResult<Vec<Chunk>> {
         let extension = path
             .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase())
             .unwrap_or_default();
 
-        info!(path = %path.display(), format = %extension, "Processing document");
+        info!(path = %path.display(), format = %extension, doc_id = %doc_id, "Processing document");
 
         let content = match extension.as_str() {
             "pdf" => self.extract_pdf(path)?,
@@ -82,27 +83,8 @@ impl IngestionService {
             }
         };
 
-        // Calculate file hash
-        let file_hash = self.calculate_file_hash(path)?;
-
-        // Create document record
-        let doc_id = Uuid::new_v4().to_string();
-        let now = Utc::now();
-
-        let document = Document {
-            id: doc_id.clone(),
-            title: title.to_string(),
-            file_path: Some(path.to_string_lossy().to_string()),
-            file_hash: Some(file_hash),
-            access_level,
-            tags: tags.clone(),
-            metadata: None,
-            created_at: now,
-            updated_at: now,
-        };
-
         // Create chunks
-        let chunks = self.create_chunks(&doc_id, &content, access_level, &tags);
+        let chunks = self.create_chunks(doc_id, &content, access_level, &tags);
 
         info!(
             doc_id = %doc_id,
@@ -110,7 +92,7 @@ impl IngestionService {
             "Document processed successfully"
         );
 
-        Ok((document, chunks))
+        Ok(chunks)
     }
 
     /// Extract content from PDF using PDFium
@@ -488,20 +470,6 @@ impl IngestionService {
         }
 
         chunks
-    }
-
-    /// Calculate file hash
-    fn calculate_file_hash(&self, path: &Path) -> ServiceResult<String> {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut file = std::fs::File::open(path).map_err(ProcessingError::Io)?;
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer).map_err(ProcessingError::Io)?;
-
-        let mut hasher = DefaultHasher::new();
-        buffer.hash(&mut hasher);
-        Ok(format!("{:x}", hasher.finish()))
     }
 }
 

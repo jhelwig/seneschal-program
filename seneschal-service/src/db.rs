@@ -147,6 +147,54 @@ impl Database {
             message: e.to_string(),
         })?;
 
+        // Add processing status columns (migration for existing databases)
+        // SQLite doesn't have IF NOT EXISTS for ALTER TABLE, so we check if columns exist
+        let has_processing_status: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('documents') WHERE name='processing_status'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+            > 0;
+
+        if !has_processing_status {
+            conn.execute_batch(
+                r#"
+                ALTER TABLE documents ADD COLUMN processing_status TEXT NOT NULL DEFAULT 'completed';
+                ALTER TABLE documents ADD COLUMN processing_error TEXT;
+                ALTER TABLE documents ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE documents ADD COLUMN image_count INTEGER NOT NULL DEFAULT 0;
+                "#,
+            )
+            .map_err(|e| DatabaseError::Migration {
+                message: format!("Failed to add processing columns: {}", e),
+            })?;
+        }
+
+        // Migration: Add progress tracking columns
+        let has_processing_phase: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('documents') WHERE name='processing_phase'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+            > 0;
+
+        if !has_processing_phase {
+            conn.execute_batch(
+                r#"
+                ALTER TABLE documents ADD COLUMN processing_phase TEXT;
+                ALTER TABLE documents ADD COLUMN processing_progress INTEGER;
+                ALTER TABLE documents ADD COLUMN processing_total INTEGER;
+                "#,
+            )
+            .map_err(|e| DatabaseError::Migration {
+                message: format!("Failed to add progress tracking columns: {}", e),
+            })?;
+        }
+
         Ok(())
     }
 
@@ -163,8 +211,8 @@ impl Database {
 
         conn.execute(
             r#"
-            INSERT INTO documents (id, title, file_path, file_hash, access_level, metadata, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            INSERT INTO documents (id, title, file_path, file_hash, access_level, metadata, created_at, updated_at, processing_status, processing_error, chunk_count, image_count, processing_phase, processing_progress, processing_total)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
             "#,
             params![
                 doc.id,
@@ -175,6 +223,13 @@ impl Database {
                 metadata_json,
                 doc.created_at.to_rfc3339(),
                 doc.updated_at.to_rfc3339(),
+                doc.processing_status.as_str(),
+                doc.processing_error,
+                doc.chunk_count as i64,
+                doc.image_count as i64,
+                doc.processing_phase,
+                doc.processing_progress.map(|p| p as i64),
+                doc.processing_total.map(|t| t as i64),
             ],
         )
         .map_err(DatabaseError::Query)?;
@@ -197,7 +252,7 @@ impl Database {
 
         let doc = conn
             .query_row(
-                "SELECT id, title, file_path, file_hash, access_level, metadata, created_at, updated_at FROM documents WHERE id = ?1",
+                "SELECT id, title, file_path, file_hash, access_level, metadata, created_at, updated_at, processing_status, processing_error, chunk_count, image_count, processing_phase, processing_progress, processing_total FROM documents WHERE id = ?1",
                 params![id],
                 |row| Document::from_row(row, vec![]),
             )
@@ -240,7 +295,7 @@ impl Database {
 
         if let Some(level) = max_access_level {
             let mut stmt = conn
-                .prepare("SELECT id, title, file_path, file_hash, access_level, metadata, created_at, updated_at FROM documents WHERE access_level <= ?1 ORDER BY title")
+                .prepare("SELECT id, title, file_path, file_hash, access_level, metadata, created_at, updated_at, processing_status, processing_error, chunk_count, image_count, processing_phase, processing_progress, processing_total FROM documents WHERE access_level <= ?1 ORDER BY title")
                 .map_err(DatabaseError::Query)?;
             let rows = stmt
                 .query_map(params![level], |row| Document::from_row(row, vec![]))
@@ -250,7 +305,7 @@ impl Database {
             }
         } else {
             let mut stmt = conn
-                .prepare("SELECT id, title, file_path, file_hash, access_level, metadata, created_at, updated_at FROM documents ORDER BY title")
+                .prepare("SELECT id, title, file_path, file_hash, access_level, metadata, created_at, updated_at, processing_status, processing_error, chunk_count, image_count, processing_phase, processing_progress, processing_total FROM documents ORDER BY title")
                 .map_err(DatabaseError::Query)?;
             let rows = stmt
                 .query_map([], |row| Document::from_row(row, vec![]))
@@ -861,22 +916,211 @@ impl Database {
         Ok(paths)
     }
 
-    /// Update the file path for a document
-    pub fn update_document_file_path(
+    /// Update document processing status
+    pub fn update_document_processing_status(
         &self,
         document_id: &str,
-        file_path: &str,
+        status: ProcessingStatus,
+        error: Option<&str>,
     ) -> ServiceResult<bool> {
         let conn = self.conn.lock().unwrap();
 
         let rows = conn
             .execute(
-                "UPDATE documents SET file_path = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![file_path, document_id],
+                "UPDATE documents SET processing_status = ?1, processing_error = ?2, updated_at = datetime('now') WHERE id = ?3",
+                params![status.as_str(), error, document_id],
             )
             .map_err(DatabaseError::Query)?;
 
         Ok(rows > 0)
+    }
+
+    /// Update document chunk and image counts
+    pub fn update_document_counts(
+        &self,
+        document_id: &str,
+        chunk_count: usize,
+        image_count: usize,
+    ) -> ServiceResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let rows = conn
+            .execute(
+                "UPDATE documents SET chunk_count = ?1, image_count = ?2, updated_at = datetime('now') WHERE id = ?3",
+                params![chunk_count as i64, image_count as i64, document_id],
+            )
+            .map_err(DatabaseError::Query)?;
+
+        Ok(rows > 0)
+    }
+
+    /// Update document processing progress
+    pub fn update_document_progress(
+        &self,
+        document_id: &str,
+        phase: &str,
+        progress: usize,
+        total: usize,
+    ) -> ServiceResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let rows = conn
+            .execute(
+                "UPDATE documents SET processing_phase = ?1, processing_progress = ?2, processing_total = ?3, updated_at = datetime('now') WHERE id = ?4",
+                params![phase, progress as i64, total as i64, document_id],
+            )
+            .map_err(DatabaseError::Query)?;
+
+        Ok(rows > 0)
+    }
+
+    /// Clear document processing progress (called when processing completes or fails)
+    pub fn clear_document_progress(&self, document_id: &str) -> ServiceResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let rows = conn
+            .execute(
+                "UPDATE documents SET processing_phase = NULL, processing_progress = NULL, processing_total = NULL, updated_at = datetime('now') WHERE id = ?1",
+                params![document_id],
+            )
+            .map_err(DatabaseError::Query)?;
+
+        Ok(rows > 0)
+    }
+
+    /// Get the next document pending processing (oldest first)
+    /// Used by the document processing worker queue
+    pub fn get_next_pending_document(&self) -> ServiceResult<Option<Document>> {
+        let conn = self.conn.lock().unwrap();
+
+        let doc = conn
+            .query_row(
+                "SELECT id, title, file_path, file_hash, access_level, metadata, created_at, updated_at, processing_status, processing_error, chunk_count, image_count, processing_phase, processing_progress, processing_total FROM documents WHERE processing_status = 'processing' ORDER BY created_at ASC LIMIT 1",
+                [],
+                |row| Document::from_row(row, vec![]),
+            )
+            .optional()
+            .map_err(DatabaseError::Query)?;
+
+        if let Some(mut doc) = doc {
+            // Load tags
+            let mut stmt = conn
+                .prepare("SELECT tag FROM document_tags WHERE document_id = ?1")
+                .map_err(DatabaseError::Query)?;
+            let tags: Vec<String> = stmt
+                .query_map(params![doc.id], |row| row.get(0))
+                .map_err(DatabaseError::Query)?
+                .filter_map(|r| r.ok())
+                .collect();
+            doc.tags = tags;
+            Ok(Some(doc))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Get chunks for a document that don't have embeddings yet
+    /// Used for resumable document processing
+    pub fn get_chunks_without_embeddings(&self, document_id: &str) -> ServiceResult<Vec<Chunk>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT c.id, c.document_id, c.content, c.chunk_index, c.page_number,
+                       c.section_title, c.access_level, c.metadata, c.created_at
+                FROM chunks c
+                LEFT JOIN chunk_embeddings ce ON c.id = ce.chunk_id
+                WHERE c.document_id = ?1 AND ce.chunk_id IS NULL
+                ORDER BY c.chunk_index
+                "#,
+            )
+            .map_err(DatabaseError::Query)?;
+
+        let chunks: Vec<Chunk> = stmt
+            .query_map(params![document_id], |row| {
+                let access_level_u8: u8 = row.get(6)?;
+                let metadata_str: Option<String> = row.get(7)?;
+                let created_at_str: String = row.get(8)?;
+
+                Ok(Chunk {
+                    id: row.get(0)?,
+                    document_id: row.get(1)?,
+                    content: row.get(2)?,
+                    chunk_index: row.get(3)?,
+                    page_number: row.get(4)?,
+                    section_title: row.get(5)?,
+                    access_level: AccessLevel::from_u8(access_level_u8),
+                    tags: vec![], // Tags loaded separately if needed
+                    metadata: metadata_str.and_then(|s| serde_json::from_str(&s).ok()),
+                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                })
+            })
+            .map_err(DatabaseError::Query)?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(chunks)
+    }
+
+    /// Get count of chunks for a document
+    pub fn get_chunk_count(&self, document_id: &str) -> ServiceResult<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE document_id = ?1",
+                params![document_id],
+                |row| row.get(0),
+            )
+            .map_err(DatabaseError::Query)?;
+        Ok(count as usize)
+    }
+
+    /// Get images for a document that don't have descriptions yet
+    /// Used for resumable image captioning
+    pub fn get_images_without_descriptions(
+        &self,
+        document_id: &str,
+    ) -> ServiceResult<Vec<DocumentImage>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT id, document_id, page_number, image_index, internal_path,
+                       mime_type, width, height, description, created_at
+                FROM document_images
+                WHERE document_id = ?1 AND (description IS NULL OR description = '')
+                ORDER BY page_number, image_index
+                "#,
+            )
+            .map_err(DatabaseError::Query)?;
+
+        let images: Vec<DocumentImage> = stmt
+            .query_map(params![document_id], |row| {
+                let created_at_str: String = row.get(9)?;
+                Ok(DocumentImage {
+                    id: row.get(0)?,
+                    document_id: row.get(1)?,
+                    page_number: row.get(2)?,
+                    image_index: row.get(3)?,
+                    internal_path: row.get(4)?,
+                    mime_type: row.get(5)?,
+                    width: row.get(6)?,
+                    height: row.get(7)?,
+                    description: row.get(8)?,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                })
+            })
+            .map_err(DatabaseError::Query)?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(images)
     }
 }
 
@@ -897,6 +1141,36 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
+/// Document processing status
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessingStatus {
+    /// Document is being processed (text extraction, embeddings, etc.)
+    Processing,
+    /// Document processing completed successfully
+    Completed,
+    /// Document processing failed
+    Failed,
+}
+
+impl ProcessingStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProcessingStatus::Processing => "processing",
+            ProcessingStatus::Completed => "completed",
+            ProcessingStatus::Failed => "failed",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "processing" => ProcessingStatus::Processing,
+            "failed" => ProcessingStatus::Failed,
+            _ => ProcessingStatus::Completed,
+        }
+    }
+}
+
 /// Document record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
@@ -907,6 +1181,20 @@ pub struct Document {
     pub access_level: AccessLevel,
     pub tags: Vec<String>,
     pub metadata: Option<serde_json::Value>,
+    pub processing_status: ProcessingStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processing_error: Option<String>,
+    pub chunk_count: usize,
+    pub image_count: usize,
+    /// Current processing phase (e.g., "chunking", "embedding", "extracting_images", "captioning")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processing_phase: Option<String>,
+    /// Current progress within the phase
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processing_progress: Option<usize>,
+    /// Total items in the current phase
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processing_total: Option<usize>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -917,6 +1205,13 @@ impl Document {
         let metadata_str: Option<String> = row.get(5)?;
         let created_at_str: String = row.get(6)?;
         let updated_at_str: String = row.get(7)?;
+        let processing_status_str: String = row.get(8)?;
+        let processing_error: Option<String> = row.get(9)?;
+        let chunk_count: i64 = row.get(10)?;
+        let image_count: i64 = row.get(11)?;
+        let processing_phase: Option<String> = row.get(12)?;
+        let processing_progress: Option<i64> = row.get(13)?;
+        let processing_total: Option<i64> = row.get(14)?;
 
         Ok(Self {
             id: row.get(0)?,
@@ -926,6 +1221,13 @@ impl Document {
             access_level: AccessLevel::from_u8(access_level_u8),
             tags,
             metadata: metadata_str.and_then(|s| serde_json::from_str(&s).ok()),
+            processing_status: ProcessingStatus::from_str(&processing_status_str),
+            processing_error,
+            chunk_count: chunk_count as usize,
+            image_count: image_count as usize,
+            processing_phase,
+            processing_progress: processing_progress.map(|p| p as usize),
+            processing_total: processing_total.map(|t| t as usize),
             created_at: DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
