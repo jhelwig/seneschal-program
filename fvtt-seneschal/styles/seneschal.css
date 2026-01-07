@@ -1,0 +1,367 @@
+/* Seneschal Sidebar Tab Styles */
+
+/* Main sidebar container - hide when not active, show when active */
+#sidebar-content > .seneschal-sidebar {
+  display: none;
+}
+
+#sidebar-content > .seneschal-sidebar.active {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Header */
+.seneschal-sidebar .seneschal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--color-border-dark);
+  flex: 0 0 auto;
+}
+
+.seneschal-sidebar .seneschal-header h4 {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--color-text-primary);
+}
+
+.seneschal-sidebar .seneschal-header-buttons {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.seneschal-sidebar .seneschal-header-buttons button {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  background: transparent;
+  border: 1px solid var(--color-border-dark);
+  cursor: pointer;
+}
+
+.seneschal-sidebar .seneschal-header-buttons button:hover {
+  background: var(--color-cool-5);
+}
+
+/* Messages Container */
+.seneschal-sidebar .seneschal-messages {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 0;
+}
+
+/* Message Styles */
+.seneschal-message {
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  max-width: 95%;
+  word-wrap: break-word;
+}
+
+.seneschal-message.user {
+  align-self: flex-end;
+  background: var(--color-primary);
+  color: white;
+}
+
+.seneschal-message.assistant {
+  align-self: flex-start;
+  background: var(--color-cool-5);
+  border: 1px solid var(--color-border-dark);
+}
+
+.seneschal-message.system {
+  align-self: center;
+  background: var(--color-warm-5);
+  font-style: italic;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+}
+
+.seneschal-message.error {
+  align-self: flex-start;
+  background: var(--color-level-error);
+  color: white;
+}
+
+/* Message Content */
+.seneschal-message-content {
+  line-height: 1.4;
+  font-size: 0.875rem;
+}
+
+.seneschal-message-content p {
+  margin: 0.25rem 0;
+}
+
+.seneschal-message-content p:first-child {
+  margin-top: 0;
+}
+
+.seneschal-message-content p:last-child {
+  margin-bottom: 0;
+}
+
+.seneschal-message-content ul,
+.seneschal-message-content ol {
+  margin: 0.25rem 0;
+  padding-left: 1.5rem;
+}
+
+.seneschal-message-content code {
+  background: rgba(0, 0, 0, 0.1);
+  padding: 0.125rem 0.25rem;
+  border-radius: 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+}
+
+.seneschal-message-content pre {
+  background: var(--color-cool-6);
+  padding: 0.5rem;
+  border-radius: 0.25rem;
+  overflow-x: auto;
+  margin: 0.25rem 0;
+}
+
+.seneschal-message-content pre code {
+  background: none;
+  padding: 0;
+}
+
+/* Thinking/Loading State */
+.seneschal-thinking {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-text-secondary);
+  font-style: italic;
+  font-size: 0.875rem;
+}
+
+.seneschal-thinking::after {
+  content: '';
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: seneschal-spin 0.75s linear infinite;
+}
+
+@keyframes seneschal-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Tool Status */
+.seneschal-tool-status {
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  background: var(--color-cool-5);
+  border-radius: 0.25rem;
+}
+
+.seneschal-tool-status i {
+  color: var(--color-primary);
+}
+
+/* Pause Dialog */
+.seneschal-pause {
+  background: var(--color-warm-5);
+  border: 1px solid var(--color-border-highlight);
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  text-align: center;
+}
+
+.seneschal-pause-message {
+  margin-bottom: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.seneschal-pause-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.seneschal-pause-buttons button {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+/* Input Area */
+.seneschal-sidebar .seneschal-input-container {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border-top: 1px solid var(--color-border-dark);
+  flex: 0 0 auto;
+  align-items: flex-end;
+}
+
+.seneschal-sidebar .seneschal-input-container textarea {
+  flex: 1;
+  resize: none;
+  min-height: 2rem;
+  max-height: 6rem;
+  padding: 0.4rem;
+  border-radius: 0.25rem;
+  border: 1px solid var(--color-border-dark);
+  font-family: inherit;
+  font-size: 0.8rem;
+  line-height: 1.3;
+}
+
+.seneschal-sidebar .seneschal-input-container textarea:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.seneschal-sidebar .seneschal-input-container button.seneschal-send {
+  flex: 0 0 auto;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.8rem;
+  width: auto;
+  min-width: unset;
+}
+
+/* Chat Command Result in Main Chat */
+.seneschal-chat-result {
+  border: 1px solid var(--color-primary);
+  border-radius: 0.5rem;
+  padding: 0.5rem;
+  margin: 0.25rem 0;
+}
+
+.seneschal-chat-result .seneschal-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.seneschal-chat-result .seneschal-header i {
+  color: var(--color-primary);
+}
+
+.seneschal-chat-result .seneschal-content {
+  font-size: 0.9rem;
+}
+
+/* Error Styles in Chat */
+.seneschal-error {
+  color: var(--color-level-error);
+  padding: 0.5rem;
+  border: 1px solid var(--color-level-error);
+  border-radius: 0.25rem;
+  background: rgba(var(--color-level-error), 0.1);
+}
+
+/* Documents Dialog */
+.seneschal-documents-app {
+  min-width: 400px;
+}
+
+.seneschal-documents-app .seneschal-upload-form {
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--color-border-dark);
+}
+
+.seneschal-documents-app .form-group {
+  margin-bottom: 0.5rem;
+}
+
+.seneschal-documents-app table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.seneschal-documents-app th,
+.seneschal-documents-app td {
+  padding: 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.seneschal-documents-app th {
+  font-weight: bold;
+  background: var(--color-cool-4);
+}
+
+/* Model Selection Dialog */
+.seneschal-model-selection {
+  padding: 0.5rem;
+}
+
+.seneschal-model-selection .notification.error {
+  background: var(--color-level-error);
+  color: white;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.25rem;
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.seneschal-model-selection .seneschal-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  justify-content: center;
+  color: var(--color-text-secondary);
+}
+
+.seneschal-model-selection .form-group {
+  margin-bottom: 1rem;
+}
+
+.seneschal-model-selection select {
+  width: 100%;
+}
+
+.seneschal-models-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+  font-size: 0.85rem;
+}
+
+.seneschal-models-table th,
+.seneschal-models-table td {
+  padding: 0.4rem 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.seneschal-models-table th {
+  font-weight: bold;
+  background: var(--color-cool-4);
+  font-size: 0.8rem;
+}
+
+.seneschal-model-selection .sheet-footer {
+  margin-top: 1rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--color-border-dark);
+  gap: 0.5rem;
+}
+
+.seneschal-model-selection .sheet-footer button {
+  flex: 1;
+}

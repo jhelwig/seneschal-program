@@ -1,0 +1,84 @@
+<div class="seneschal-documents-dialog">
+  <header class="seneschal-documents-header">
+    <h3><i class="fas fa-folder-open"></i> {{localize "SENESCHAL.Documents.Title"}}</h3>
+  </header>
+
+  <section class="seneschal-documents-upload">
+    <h4>{{localize "SENESCHAL.Documents.Upload"}}</h4>
+    <form class="seneschal-upload-form">
+      <div class="form-group">
+        <label for="seneschal-file">{{localize "SENESCHAL.Documents.File"}}</label>
+        <input type="file" id="seneschal-file" name="file" accept=".pdf,.epub,.md,.txt,.html" required />
+      </div>
+      <div class="form-group">
+        <label for="seneschal-title">{{localize "SENESCHAL.Documents.DocumentTitle"}}</label>
+        <input type="text" id="seneschal-title" name="title" placeholder="{{localize 'SENESCHAL.Documents.TitlePlaceholder'}}" required />
+      </div>
+      <div class="form-group">
+        <label for="seneschal-access">{{localize "SENESCHAL.Documents.AccessLevel"}}</label>
+        <select id="seneschal-access" name="access_level">
+          <option value="player">{{localize "SENESCHAL.Documents.AccessPlayer"}}</option>
+          <option value="trusted">{{localize "SENESCHAL.Documents.AccessTrusted"}}</option>
+          <option value="assistant">{{localize "SENESCHAL.Documents.AccessAssistant"}}</option>
+          <option value="gm_only" selected>{{localize "SENESCHAL.Documents.AccessGmOnly"}}</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="seneschal-tags">{{localize "SENESCHAL.Documents.Tags"}}</label>
+        <input type="text" id="seneschal-tags" name="tags" placeholder="{{localize 'SENESCHAL.Documents.TagsPlaceholder'}}" />
+      </div>
+      <button type="submit" class="seneschal-upload-btn">
+        <i class="fas fa-upload"></i> {{localize "SENESCHAL.Documents.UploadBtn"}}
+      </button>
+    </form>
+  </section>
+
+  <section class="seneschal-documents-list">
+    <h4>{{localize "SENESCHAL.Documents.List"}}</h4>
+    {{#if isLoading}}
+    <div class="seneschal-loading">
+      <i class="fas fa-spinner fa-spin"></i> {{localize "SENESCHAL.Documents.Loading"}}
+    </div>
+    {{else if error}}
+    <div class="seneschal-error">
+      <i class="fas fa-exclamation-triangle"></i> {{error}}
+    </div>
+    {{else if documents.length}}
+    <table class="seneschal-documents-table">
+      <thead>
+        <tr>
+          <th>{{localize "SENESCHAL.Documents.DocumentTitle"}}</th>
+          <th>{{localize "SENESCHAL.Documents.AccessLevel"}}</th>
+          <th>{{localize "SENESCHAL.Documents.ChunkCount"}}</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {{#each documents}}
+        <tr data-document-id="{{this.id}}">
+          <td class="document-title">{{this.title}}</td>
+          <td class="document-access">{{this.access_level}}</td>
+          <td class="document-chunks">{{this.chunk_count}}</td>
+          <td class="document-actions">
+            <button type="button" class="seneschal-delete-doc" title="{{localize 'SENESCHAL.Documents.Delete'}}">
+              <i class="fas fa-trash"></i>
+            </button>
+          </td>
+        </tr>
+        {{/each}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="seneschal-empty">
+      {{localize "SENESCHAL.Documents.Empty"}}
+    </div>
+    {{/if}}
+  </section>
+
+  {{#if uploadProgress}}
+  <div class="seneschal-upload-progress">
+    <div class="progress-bar" style="width: {{uploadProgress}}%"></div>
+    <span>{{localize "SENESCHAL.Documents.Uploading"}} ({{uploadProgress}}%)</span>
+  </div>
+  {{/if}}
+</div>
