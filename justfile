@@ -64,6 +64,10 @@ test: download-pdfium
 run: download-pdfium
     LD_LIBRARY_PATH="$(pwd)/{{pdfium_dir}}/lib:${LD_LIBRARY_PATH:-}" cargo run
 
+# Run the service in release mode
+run-release: download-pdfium
+    LD_LIBRARY_PATH="$(pwd)/{{pdfium_dir}}/lib:${LD_LIBRARY_PATH:-}" cargo run --release
+
 # Clean build artifacts (keeps downloaded PDFium)
 clean:
     cargo clean
