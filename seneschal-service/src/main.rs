@@ -103,10 +103,12 @@ fn init_logging() {
         .with_thread_ids(true)
         .compact();
 
+    // Use RUST_LOG if set, otherwise default to info level for our crate
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("seneschal_service=info"));
+
     tracing_subscriber::registry()
         .with(fmt::layer().event_format(format))
-        .with(
-            EnvFilter::from_default_env().add_directive("seneschal_service=info".parse().unwrap()),
-        )
+        .with(filter)
         .init();
 }
