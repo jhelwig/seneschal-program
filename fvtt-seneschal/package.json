@@ -1,0 +1,24 @@
+{
+  "name": "fvtt-seneschal",
+  "version": "0.1.0",
+  "description": "AI-powered assistant for Foundry VTT game masters",
+  "type": "module",
+  "scripts": {
+    "lint": "eslint scripts/",
+    "lint:fix": "eslint scripts/ --fix",
+    "format": "prettier --write scripts/",
+    "format:check": "prettier --check scripts/",
+    "test": "node --test tests/*.test.js"
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "prettier": "^3.0.0"
+  },
+  "prettier": {
+    "semi": true,
+    "singleQuote": false,
+    "trailingComma": "es5",
+    "printWidth": 100,
+    "tabWidth": 2
+  }
+}

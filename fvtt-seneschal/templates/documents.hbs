@@ -1,0 +1,134 @@
+<div class="seneschal-documents-dialog">
+  <header class="seneschal-documents-header">
+    <h3><i class="fas fa-folder-open"></i> {{localize "SENESCHAL.Documents.Title"}}</h3>
+  </header>
+
+  <section class="seneschal-documents-upload">
+    <h4>{{localize "SENESCHAL.Documents.Upload"}}</h4>
+    <form class="seneschal-upload-form">
+      <div class="form-group">
+        <label for="seneschal-file">{{localize "SENESCHAL.Documents.File"}}</label>
+        <input type="file" id="seneschal-file" name="file" accept=".pdf,.epub,.md,.txt,.html" required />
+      </div>
+      <div class="form-group">
+        <label for="seneschal-title">{{localize "SENESCHAL.Documents.DocumentTitle"}}</label>
+        <input type="text" id="seneschal-title" name="title" placeholder="{{localize 'SENESCHAL.Documents.TitlePlaceholder'}}" required />
+      </div>
+      <div class="form-group">
+        <label for="seneschal-access">{{localize "SENESCHAL.Documents.AccessLevel"}}</label>
+        <select id="seneschal-access" name="access_level">
+          <option value="player">{{localize "SENESCHAL.Documents.AccessPlayer"}}</option>
+          <option value="trusted">{{localize "SENESCHAL.Documents.AccessTrusted"}}</option>
+          <option value="assistant">{{localize "SENESCHAL.Documents.AccessAssistant"}}</option>
+          <option value="gm_only" selected>{{localize "SENESCHAL.Documents.AccessGmOnly"}}</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="seneschal-tags">{{localize "SENESCHAL.Documents.Tags"}}</label>
+        <input type="text" id="seneschal-tags" name="tags" placeholder="{{localize 'SENESCHAL.Documents.TagsPlaceholder'}}" />
+      </div>
+      <button type="submit" class="seneschal-upload-btn">
+        <i class="fas fa-upload"></i> {{localize "SENESCHAL.Documents.UploadBtn"}}
+      </button>
+    </form>
+  </section>
+
+  <section class="seneschal-documents-list">
+    <h4>{{localize "SENESCHAL.Documents.List"}}</h4>
+    {{#if isLoading}}
+    <div class="seneschal-loading">
+      <i class="fas fa-spinner fa-spin"></i> {{localize "SENESCHAL.Documents.Loading"}}
+    </div>
+    {{else if error}}
+    <div class="seneschal-error">
+      <i class="fas fa-exclamation-triangle"></i> {{error}}
+    </div>
+    {{else if documents.length}}
+    <table class="seneschal-documents-table">
+      <thead>
+        <tr>
+          <th>{{localize "SENESCHAL.Documents.DocumentTitle"}}</th>
+          <th>{{localize "SENESCHAL.Documents.Status"}}</th>
+          <th>{{localize "SENESCHAL.Documents.ChunkCount"}}</th>
+          <th>{{localize "SENESCHAL.Documents.ImageCount"}}</th>
+          <th>{{localize "SENESCHAL.Documents.Actions"}}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{#each documents}}
+        <tr data-document-id="{{this.id}}" class="{{#if (eq this.processing_status 'processing')}}processing{{else if (eq this.processing_status 'failed')}}failed{{/if}} {{#if (eq ../processingDoc this.id)}}reprocessing{{/if}}">
+          <td class="document-title">
+            {{this.title}}
+            {{#if this.processing_error}}
+            <div class="document-error" title="{{this.processing_error}}">
+              <i class="fas fa-exclamation-circle"></i>
+            </div>
+            {{/if}}
+          </td>
+          <td class="document-status">
+            {{#if (eq this.processing_status 'processing')}}
+            <i class="fas fa-spinner fa-spin"></i>
+            {{#if this.processing_phase}}
+              {{#if (eq this.processing_phase 'queued')}}
+                {{localize "SENESCHAL.Documents.PhaseQueued"}}
+              {{else if (eq this.processing_phase 'chunking')}}
+                {{localize "SENESCHAL.Documents.PhaseChunking"}}
+              {{else if (eq this.processing_phase 'embedding')}}
+                {{localize "SENESCHAL.Documents.PhaseEmbedding"}} ({{this.processing_progress}}/{{this.processing_total}})
+              {{else if (eq this.processing_phase 'extracting_images')}}
+                {{localize "SENESCHAL.Documents.PhaseExtractingImages"}}
+              {{else if (eq this.processing_phase 'captioning')}}
+                {{localize "SENESCHAL.Documents.PhaseCaptioning"}} ({{this.processing_progress}}/{{this.processing_total}})
+              {{else}}
+                {{this.processing_phase}}
+              {{/if}}
+            {{else}}
+              {{localize "SENESCHAL.Documents.StatusProcessing"}}
+            {{/if}}
+            {{else if (eq this.processing_status 'failed')}}
+            <i class="fas fa-times-circle"></i> {{localize "SENESCHAL.Documents.StatusFailed"}}
+            {{else}}
+            <i class="fas fa-check-circle"></i> {{localize "SENESCHAL.Documents.StatusCompleted"}}
+            {{/if}}
+          </td>
+          <td class="document-chunks">{{this.chunk_count}}</td>
+          <td class="document-images">
+            {{#if (eq ../processingDoc this.id)}}
+            <i class="fas fa-spinner fa-spin"></i>
+            {{else}}
+            {{this.image_count}}
+            {{/if}}
+          </td>
+          <td class="document-actions">
+            {{#if this.isPdf}}
+            <button type="button" class="seneschal-reextract-images" title="{{localize 'SENESCHAL.Documents.ReextractImages'}}" {{#if ../processingDoc}}disabled{{/if}} {{#if (eq this.processing_status 'processing')}}disabled{{/if}}>
+              <i class="fas fa-sync-alt"></i>
+            </button>
+            {{#if this.image_count}}
+            <button type="button" class="seneschal-delete-images" title="{{localize 'SENESCHAL.Documents.DeleteImages'}}" {{#if ../processingDoc}}disabled{{/if}} {{#if (eq this.processing_status 'processing')}}disabled{{/if}}>
+              <i class="fas fa-images"></i>
+            </button>
+            {{/if}}
+            {{/if}}
+            <button type="button" class="seneschal-delete-doc" title="{{localize 'SENESCHAL.Documents.Delete'}}" {{#if ../processingDoc}}disabled{{/if}}>
+              <i class="fas fa-trash"></i>
+            </button>
+          </td>
+        </tr>
+        {{/each}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="seneschal-empty">
+      {{localize "SENESCHAL.Documents.Empty"}}
+    </div>
+    {{/if}}
+  </section>
+
+  {{#if uploadProgress}}
+  <div class="seneschal-upload-progress">
+    <div class="progress-bar" style="width: {{uploadProgress}}%"></div>
+    <span>{{localize "SENESCHAL.Documents.Uploading"}} ({{uploadProgress}}%)</span>
+  </div>
+  {{/if}}
+</div>

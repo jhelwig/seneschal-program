@@ -1,4 +1,4 @@
-# Seneschal Program: Design & Requirements Document v0.3
+# Seneschal Program: Design & Requirements Document v0.4
 
 **Repository:** https://github.com/jhelwig/seneschal-program
 
@@ -488,9 +488,13 @@ Cleanup runs periodically:
 |-------------|------|-------|---------|-------------|
 | `backendUrl` | String | world | `""` | Backend service URL (required) |
 | `apiKey` | String | client | `""` | Per-user API key for backend auth |
+| `chatModel` | String | world | `""` | Ollama model for chat (dropdown from `/api/models`) |
+| `visionModel` | String | world | `""` | Ollama model for image captioning (dropdown from `/api/models`) |
 | `enablePlayerAccess` | Boolean | world | `false` | Allow players to use Seneschal |
 | `maxActionsPerRequest` | Number | world | `5` | Limit AI actions per request |
-| `chatCommandPrefix` | String | world | `/ai` | Chat command prefix (one-shot queries) |
+| `chatCommandPrefix` | String | world | `/sen-ai` | Chat command prefix (one-shot queries) |
+
+**Model Selection:** Both `chatModel` and `visionModel` are populated via dropdown from the `/api/models` endpoint. Vision models (e.g., `llava`, `llava-llama3`, `moondream`) are used during document ingestion to caption extracted images for searchability.
 
 ### 3.3 Seneschal Panel
 
@@ -686,7 +690,8 @@ function getMgt2eEnhancements() {
 | Error Handling | `thiserror` + `rootcause` | Typed errors with context chains |
 | Database | `rusqlite` + `sqlite-vec` | Single-file with vector search |
 | Embeddings | `fastembed` | ONNX-based, no PyTorch |
-| PDF Extraction | `lopdf` or `pdfium-render` | Bookmarks supported, tables limited |
+| PDF Extraction | `pdfium-render` | Text + image extraction, Apache 2.0 licensed |
+| Image Processing | `image` | WebP encoding for FVTT optimization |
 | EPUB Parsing | `epub` | Standard EPUB2/3 |
 | MCP Server | `rmcp` 0.8+ | Official SDK, SSE transport |
 | Async Runtime | `tokio` | Standard |
@@ -752,7 +757,7 @@ pub struct OllamaConfig {
 pub struct StorageConfig {
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,  // "./data"
-    // Creates: data/seneschal.db, data/documents/, data/embeddings/
+    // Creates: data/seneschal.db, data/documents/, data/images/
 }
 
 #[derive(Debug, Deserialize)]
@@ -768,6 +773,14 @@ pub struct LimitsConfig {
 pub struct McpConfig {
     #[serde(default = "default_mcp_path")]
     pub path: String,  // "/mcp"
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct FvttConfig {
+    /// Path to FVTT assets directory (Data/assets). If provided and writable,
+    /// images are copied directly. Otherwise, shuttled via API.
+    #[serde(default)]
+    pub assets_path: Option<PathBuf>,
 }
 
 impl AppConfig {
@@ -811,8 +824,7 @@ default_model = "llama3.2"
 data_dir = "/var/lib/seneschal"
 
 [fvtt]
-assets_path = "/var/lib/foundryvtt/Data"
-assets_writable = false
+assets_path = "/var/lib/foundryvtt/Data/assets"
 
 [limits]
 max_document_size_bytes = 104857600  # 100MB
@@ -972,6 +984,29 @@ POST /api/search
     "tags_match": "any"  // "any" or "all"
   }
 }
+```
+
+#### 4.3.7 Image Endpoints
+
+```
+GET /api/images
+→ List images (filtered by user role via document JOIN)
+Query params: document_id, page_number, search (semantic search via description)
+
+GET /api/images/:id
+→ Image metadata (description, dimensions, source document/page)
+
+GET /api/images/:id/data
+→ Raw image binary (WebP format) for shuttle mode
+
+POST /api/images/:id/deliver
+→ Copy image to FVTT assets (direct mode) or return shuttle instructions
+{
+  "target_path": "seneschal/Core_Rulebook/page_42_starship_deckplan.webp"
+}
+→ { "fvtt_path": "seneschal/Core_Rulebook/page_42_starship_deckplan.webp", "mode": "direct" }
+   OR
+→ { "mode": "shuttle", "image_id": "...", "suggested_path": "..." }
 ```
 
 ### 4.4 Access Control
@@ -1189,27 +1224,34 @@ pub fn mcp_router(service: Arc<SeneschalService>) -> Router {
 
 #### 4.8.1 Supported Formats & Capabilities
 
-| Format | Library | ToC/Bookmarks | Tables | Notes |
-|--------|---------|---------------|--------|-------|
-| PDF | `lopdf` / `pdfium-render` | ✅ Yes | ⚠️ Limited | No auto table detection |
-| EPUB | `epub` | ✅ Chapters | N/A | Full support |
-| Markdown | Native | ✅ Headers | ✅ Yes | Full support |
-| Plain Text | Native | ❌ No | ❌ No | Line-based |
+| Format | Library | ToC/Bookmarks | Tables | Images | Notes |
+|--------|---------|---------------|--------|--------|-------|
+| PDF | `pdfium-render` | ✅ Yes | ⚠️ Limited | ✅ Yes | Text + image extraction |
+| EPUB | `epub` | ✅ Chapters | N/A | ❌ No | Full text support |
+| Markdown | Native | ✅ Headers | ✅ Yes | ❌ No | Full support |
+| Plain Text | Native | ❌ No | ❌ No | ❌ No | Line-based |
 
-**Limitation:** Unlike Python's PyMuPDF, Rust PDF libraries do not provide automatic table detection and extraction. Tables will be extracted as text but may lose structure. For rulebooks with complex tables (equipment lists, etc.), manual review of chunks may be needed, or consider pre-processing PDFs with PyMuPDF externally.
+**Table limitation:** Unlike Python's PyMuPDF, `pdfium-render` does not provide automatic table detection and extraction. Tables will be extracted as text but may lose structure. For rulebooks with complex tables (equipment lists, etc.), manual review of chunks may be needed.
+
+**Image extraction:** PDF images are extracted, converted to WebP format, and optionally captioned using a vision model for searchability. Images inherit access control from their parent document.
 
 #### 4.8.2 Bookmark/ToC Extraction
 
 ```rust
-use lopdf::Document;
+use pdfium_render::prelude::*;
 
-pub fn extract_bookmarks(doc: &Document) -> Vec<BookmarkEntry> {
-    doc.bookmarks.iter()
-        .filter_map(|&id| doc.bookmark_table.get(&id))
+pub fn extract_bookmarks(document: &PdfDocument) -> Vec<BookmarkEntry> {
+    document.bookmarks()
+        .iter()
         .map(|bm| BookmarkEntry {
-            title: bm.title.clone(),
-            page: bm.page,
-            children: extract_children(doc, bm),
+            title: bm.title().unwrap_or_default(),
+            page: bm.destination()
+                .and_then(|d| d.page_index())
+                .map(|i| i as u32),
+            children: bm.children()
+                .iter()
+                .map(|child| extract_bookmark_entry(&child))
+                .collect(),
         })
         .collect()
 }
@@ -1237,6 +1279,203 @@ Multi-volume works (e.g., "The Great Rift" volumes 1-2) are handled via tags:
 ```
 
 Search can filter by `tags: ["the-great-rift"]` to search across all volumes.
+
+#### 4.8.4 Image Extraction
+
+PDFs often contain maps, character portraits, equipment illustrations, and other images useful for creating FVTT scenes and actors. Images are extracted during ingestion using `pdfium-render` and stored separately from the FVTT assets directory to prevent accidental player exposure.
+
+**Storage schema:**
+
+```sql
+CREATE TABLE document_images (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    page_number INTEGER NOT NULL,
+    image_index INTEGER NOT NULL,  -- nth image on this page
+    internal_path TEXT NOT NULL,   -- path in data/images/
+    mime_type TEXT NOT NULL,       -- always "image/webp"
+    width INTEGER,
+    height INTEGER,
+    description TEXT,              -- vision model caption
+    created_at TEXT NOT NULL,
+    UNIQUE(document_id, page_number, image_index)
+);
+
+CREATE INDEX idx_document_images_document ON document_images(document_id);
+
+-- Vector embeddings for description search
+CREATE TABLE document_image_embeddings (
+    image_id TEXT PRIMARY KEY REFERENCES document_images(id) ON DELETE CASCADE,
+    embedding BLOB NOT NULL
+);
+```
+
+**Note:** `access_level` is NOT stored in `document_images`. Access control is determined by JOINing with the parent `documents` table, ensuring changes to document access propagate automatically.
+
+**Image processing pipeline:**
+
+```rust
+use pdfium_render::prelude::*;
+use image::codecs::webp::WebPEncoder;
+
+pub struct ImageExtractionResult {
+    pub page_number: i32,
+    pub image_index: usize,
+    pub internal_path: PathBuf,
+    pub width: u32,
+    pub height: u32,
+    pub description: Option<String>,
+}
+
+impl DocumentProcessor {
+    /// Extract and store images from a PDF document
+    pub async fn extract_images(
+        &self,
+        document_id: &str,
+        pdf_path: &Path,
+        vision_model: Option<&str>,
+    ) -> Result<Vec<ImageExtractionResult>, ProcessingError> {
+        let pdfium = Pdfium::bind_to_statically_linked_library()?;
+        let document = pdfium.load_pdf_from_file(pdf_path, None)?;
+
+        let images_dir = self.data_dir.join("images").join(document_id);
+        std::fs::create_dir_all(&images_dir)?;
+
+        let mut results = Vec::new();
+
+        for (page_idx, page) in document.pages().iter().enumerate() {
+            for (img_idx, object) in page.objects().iter().enumerate() {
+                if let Some(image_object) = object.as_image_page_object() {
+                    let img = image_object.get_raw_image()?;
+
+                    // Save as WebP for FVTT optimization
+                    let filename = format!("page_{}_img_{}.webp", page_idx + 1, img_idx);
+                    let path = images_dir.join(&filename);
+
+                    let file = std::fs::File::create(&path)?;
+                    let encoder = WebPEncoder::new_lossless(file);
+                    img.write_with_encoder(encoder)?;
+
+                    // Caption with vision model if configured
+                    let description = if let Some(model) = vision_model {
+                        self.caption_image(&path, model).await.ok()
+                    } else {
+                        None
+                    };
+
+                    results.push(ImageExtractionResult {
+                        page_number: (page_idx + 1) as i32,
+                        image_index: img_idx,
+                        internal_path: path,
+                        width: img.width(),
+                        height: img.height(),
+                        description,
+                    });
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Caption an image using a vision model
+    async fn caption_image(
+        &self,
+        image_path: &Path,
+        model: &str,
+    ) -> Result<String, OllamaError> {
+        let image_base64 = base64::encode(std::fs::read(image_path)?);
+
+        self.ollama.generate(GenerateRequest {
+            model: model.to_string(),
+            prompt: "Describe this image concisely for use in a tabletop RPG context. \
+                     Focus on what it depicts (map, character, creature, equipment, etc.) \
+                     and key visual details.".to_string(),
+            images: Some(vec![image_base64]),
+            stream: false,
+            ..Default::default()
+        }).await.map(|r| r.response)
+    }
+}
+```
+
+**FVTT asset delivery:**
+
+When the LLM requests to use an image in FVTT (e.g., for a scene background or actor portrait), the image must be copied to FVTT's assets directory with a meaningful name.
+
+```rust
+/// Determines how to deliver images to FVTT
+enum AssetsAccess {
+    /// Backend can write directly to FVTT assets directory
+    Direct(PathBuf),
+    /// Images must be shuttled via API to the module
+    Shuttle,
+}
+
+fn check_assets_access(config: &FvttConfig) -> AssetsAccess {
+    match &config.assets_path {
+        None => AssetsAccess::Shuttle,
+        Some(path) => {
+            let seneschal_dir = path.join("seneschal");
+            match std::fs::create_dir_all(&seneschal_dir) {
+                Ok(_) => AssetsAccess::Direct(seneschal_dir),
+                Err(e) => {
+                    tracing::warn!(
+                        path = %seneschal_dir.display(),
+                        error = %e,
+                        "FVTT assets path not writable, falling back to API shuttle"
+                    );
+                    AssetsAccess::Shuttle
+                }
+            }
+        }
+    }
+}
+
+/// Generate a human-readable filename for FVTT
+fn fvtt_image_path(
+    document_title: &str,
+    page_number: i32,
+    description: Option<&str>,
+) -> PathBuf {
+    let sanitized_title = sanitize_filename(document_title);
+    let sanitized_desc = description
+        .map(|d| format!("_{}", sanitize_filename(&d.chars().take(30).collect::<String>())))
+        .unwrap_or_default();
+
+    PathBuf::from(format!(
+        "seneschal/{}/page_{}{}.webp",
+        sanitized_title,
+        page_number,
+        sanitized_desc
+    ))
+}
+```
+
+**Shuttle mode (module-side):**
+
+When direct write is unavailable, the module uses `FilePicker.uploadPersistent()`:
+
+```javascript
+async function saveImageToFVTT(imageId, targetPath) {
+  // Fetch image data from backend
+  const response = await fetch(`${backendUrl}/api/images/${imageId}/data`);
+  const blob = await response.blob();
+
+  // Convert to File object
+  const filename = targetPath.split('/').pop();
+  const file = new File([blob], filename, { type: 'image/webp' });
+
+  // Upload to module storage
+  const result = await FilePicker.uploadPersistent(
+    "fvtt-seneschal",
+    targetPath.replace(/\/[^/]+$/, ''),  // directory path
+    file
+  );
+
+  return result.path;
+}
+```
 
 ### 4.9 Error Handling
 
@@ -1304,32 +1543,44 @@ pub enum OllamaError {
 #[derive(Error, Debug)]
 pub enum ProcessingError {
     #[error("Failed to read PDF")]
-    PdfRead(#[source] lopdf::Error),
-    
+    PdfRead(#[source] pdfium_render::prelude::PdfiumError),
+
     #[error("Failed to extract text from page {page}")]
     TextExtraction {
         page: u32,
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
-    
+
+    #[error("Failed to extract image from page {page}")]
+    ImageExtraction {
+        page: u32,
+        image_index: usize,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
     #[error("Embedding generation failed")]
     Embedding(#[source] fastembed::Error),
 }
 
 // Usage with rootcause for context chains:
 fn process_document(path: &Path) -> Result<(), Report<ServiceError>> {
-    let doc = lopdf::Document::load(path)
+    let pdfium = Pdfium::bind_to_statically_linked_library()
+        .map_err(|e| ServiceError::Processing(ProcessingError::PdfRead(e)))
+        .context("Failed to initialize PDFium")?;
+
+    let doc = pdfium.load_pdf_from_file(path, None)
         .map_err(|e| ServiceError::Processing(ProcessingError::PdfRead(e)))
         .context("Failed to load PDF document")
         .attach(format!("Path: {}", path.display()))?;
-    
-    for (page_num, _) in doc.get_pages() {
-        extract_page_text(&doc, page_num)
+
+    for (page_idx, page) in doc.pages().iter().enumerate() {
+        extract_page_text(&page)
             .context("Page extraction failed")
-            .attach(format!("Page: {}", page_num))?;
+            .attach(format!("Page: {}", page_idx + 1))?;
     }
-    
+
     Ok(())
 }
 
@@ -1555,5 +1806,5 @@ pub enum TravellerTool {
 
 ---
 
-*Document Version: 0.3.0*
-*Last Updated: 2026-01-06*
+*Document Version: 0.4.0*
+*Last Updated: 2026-01-07*

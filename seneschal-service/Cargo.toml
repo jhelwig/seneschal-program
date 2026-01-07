@@ -1,0 +1,81 @@
+[package]
+name = "seneschal-service"
+description = "AI-powered assistant backend for Foundry VTT game masters"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true }
+
+# Web framework
+axum = { workspace = true }
+axum-extra = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Configuration
+config = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Database
+rusqlite = { workspace = true }
+
+# Streaming support
+tokio-stream = { workspace = true }
+
+# PDF processing
+pdfium-render = { workspace = true }
+image = { workspace = true }
+
+# EPUB processing
+epub = { workspace = true }
+
+# MCP server
+rmcp = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# Metrics and observability
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# i18n
+fluent = { workspace = true }
+fluent-bundle = { workspace = true }
+unic-langid = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
+async-stream = { workspace = true }
+bytes = { workspace = true }
+mime = { workspace = true }
+multer = { workspace = true }
+markdown = { workspace = true }
+base64 = { workspace = true }
+tempfile = { workspace = true }
+
+# Security
+argon2 = { workspace = true }
+rand = { workspace = true }
+
+# Schema generation
+schemars = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"

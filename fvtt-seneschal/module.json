@@ -1,0 +1,28 @@
+{
+  "id": "fvtt-seneschal",
+  "title": "Seneschal Program",
+  "description": "AI-powered assistant for game masters supporting rule lookups, entity creation, and campaign management",
+  "version": "0.1.0",
+  "compatibility": {
+    "minimum": "13",
+    "verified": "13"
+  },
+  "authors": [
+    {
+      "name": "Jacob Helwig",
+      "url": "https://github.com/jhelwig"
+    }
+  ],
+  "url": "https://github.com/jhelwig/seneschal-program",
+  "bugs": "https://github.com/jhelwig/seneschal-program/issues",
+  "esmodules": ["scripts/main.mjs"],
+  "styles": ["styles/seneschal.css"],
+  "socket": true,
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    }
+  ]
+}
