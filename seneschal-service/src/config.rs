@@ -53,10 +53,6 @@ pub struct OllamaConfig {
     #[serde(default = "default_model")]
     pub default_model: String,
 
-    /// Vision model for image captioning (e.g., "llava", "bakllava")
-    #[serde(default)]
-    pub vision_model: Option<String>,
-
     #[serde(default = "default_temperature")]
     pub temperature: f32,
 
@@ -222,7 +218,6 @@ fn default_ollama() -> OllamaConfig {
     OllamaConfig {
         base_url: default_ollama_url(),
         default_model: default_model(),
-        vision_model: None,
         temperature: default_temperature(),
         request_timeout_secs: default_request_timeout_secs(),
     }

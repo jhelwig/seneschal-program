@@ -335,6 +335,7 @@ async fn upload_document_handler(
     let mut title: Option<String> = None;
     let mut access_level = AccessLevel::GmOnly;
     let mut tags: Vec<String> = Vec::new();
+    let mut vision_model: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
@@ -377,6 +378,16 @@ async fn upload_document_handler(
                 })?;
                 tags = tags_str.split(',').map(|s| s.trim().to_string()).collect();
             }
+            "vision_model" => {
+                let model = field.text().await.map_err(|e| {
+                    state.i18n_error(ServiceError::InvalidRequest {
+                        message: e.to_string(),
+                    })
+                })?;
+                if !model.is_empty() {
+                    vision_model = Some(model);
+                }
+            }
             _ => {}
         }
     }
@@ -391,7 +402,7 @@ async fn upload_document_handler(
 
     let document = state
         .service
-        .upload_document(&data, &filename, &title, access_level, tags)
+        .upload_document(&data, &filename, &title, access_level, tags, vision_model)
         .await
         .map_err(|e| state.i18n_error(e))?;
 

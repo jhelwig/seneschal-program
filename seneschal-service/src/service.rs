@@ -797,6 +797,7 @@ When asked about rules or game content, use document_search to find relevant inf
         title: &str,
         access_level: AccessLevel,
         tags: Vec<String>,
+        vision_model: Option<String>,
     ) -> ServiceResult<Document> {
         // Check file size
         if content.len() as u64 > self.config.limits.max_document_size_bytes {
@@ -854,11 +855,11 @@ When asked about rules or game content, use document_search to find relevant inf
                         }
                     }
 
-                    // Caption images if vision model is configured
-                    if self.config.ollama.vision_model.is_some() {
+                    // Caption images if vision model is provided
+                    if let Some(ref model) = vision_model {
                         for image in &images {
                             let image_path = std::path::Path::new(&image.internal_path);
-                            match self.caption_image(image_path).await {
+                            match self.caption_image(image_path, model).await {
                                 Ok(Some(description)) => {
                                     // Update the image description
                                     if let Err(e) =
@@ -959,17 +960,12 @@ When asked about rules or game content, use document_search to find relevant inf
         self.db.get_document_images(document_id)
     }
 
-    /// Caption an image using the vision model
-    /// Returns None if no vision model is configured
+    /// Caption an image using the specified vision model
     pub async fn caption_image(
         &self,
         image_path: &std::path::Path,
+        vision_model: &str,
     ) -> ServiceResult<Option<String>> {
-        let vision_model = match &self.config.ollama.vision_model {
-            Some(model) => model,
-            None => return Ok(None),
-        };
-
         // Read and encode image as base64
         let image_data = std::fs::read(image_path)
             .map_err(|e| ServiceError::Processing(crate::error::ProcessingError::Io(e)))?;

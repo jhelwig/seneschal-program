@@ -488,6 +488,9 @@ class BackendClient {
     if (metadata.tags) {
       formData.append("tags", metadata.tags);
     }
+    if (metadata.visionModel) {
+      formData.append("vision_model", metadata.visionModel);
+    }
 
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
@@ -1175,12 +1178,16 @@ class DocumentManagementDialog extends Application {
     this.render(false);
 
     try {
+      // Get vision model from settings
+      const visionModel = getSetting(SETTINGS.VISION_MODEL);
+
       await this.backendClient.uploadDocument(
         file,
         {
           title,
           accessLevel,
           tags: tags || undefined,
+          visionModel: visionModel || undefined,
         },
         (progress) => {
           this.uploadProgress = progress;
