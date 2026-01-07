@@ -23,7 +23,7 @@ pub enum ServiceError {
     #[error("Tool call not found: {tool_call_id}")]
     ToolCallNotFound { tool_call_id: String },
 
-    #[error("Ollama error")]
+    #[error("{0}")]
     Ollama(#[from] OllamaError),
 
     #[error("Database error")]
