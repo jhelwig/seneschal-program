@@ -8,7 +8,7 @@
     "lint:fix": "eslint scripts/ --fix",
     "format": "prettier --write scripts/",
     "format:check": "prettier --check scripts/",
-    "test": "node --test 'tests/**/*.test.js'"
+    "test": "node --test tests/*.test.js"
   },
   "devDependencies": {
     "eslint": "^9.0.0",

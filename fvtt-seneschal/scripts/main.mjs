@@ -1416,13 +1416,8 @@ class DocumentManagementDialog extends Application {
     try {
       // Get vision model from settings
       const visionModel = getSetting(SETTINGS.VISION_MODEL);
-      await this.backendClient.reextractDocumentImages(
-        documentId,
-        visionModel || null
-      );
-      ui.notifications.info(
-        game.i18n.localize("SENESCHAL.Documents.ReextractImagesQueued")
-      );
+      await this.backendClient.reextractDocumentImages(documentId, visionModel || null);
+      ui.notifications.info(game.i18n.localize("SENESCHAL.Documents.ReextractImagesQueued"));
       // Reload documents to show processing status, then start polling
       await this._loadDocuments();
     } catch (error) {
