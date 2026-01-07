@@ -1202,6 +1202,24 @@ When asked about rules or game content, use document_search to find relevant inf
         Ok(count)
     }
 
+    /// Delete a single image by ID
+    pub fn delete_image(&self, image_id: &str) -> ServiceResult<bool> {
+        // Get path and delete from database
+        let result = self.db.delete_image(image_id)?;
+
+        if let Some((path, document_id)) = result {
+            // Delete the image file
+            if let Err(e) = std::fs::remove_file(&path) {
+                warn!(path = %path, error = %e, "Failed to delete image file");
+            }
+
+            info!(image_id = %image_id, document_id = %document_id, "Deleted image");
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     /// Re-extract images from a document
     /// This queues the document for reprocessing - the actual extraction happens in the background worker
     pub fn reextract_document_images(

@@ -365,3 +365,47 @@
 .seneschal-model-selection .sheet-footer button {
   flex: 1;
 }
+
+/* Image Browser Dialog - styles are inline in template due to FVTT CSS conflicts */
+
+/* Image Lightbox */
+.seneschal-lightbox {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.9);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.seneschal-lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.seneschal-lightbox-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  background: transparent;
+  border: none;
+  color: white;
+  font-size: 2rem;
+  cursor: pointer;
+  padding: 0.5rem;
+}
+
+.seneschal-lightbox-close:hover {
+  color: var(--color-primary);
+}
+
+/* Document table browse button */
+.seneschal-documents-table .seneschal-browse-images {
+  color: var(--color-primary);
+}

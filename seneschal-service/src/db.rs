@@ -916,6 +916,41 @@ impl Database {
         Ok(paths)
     }
 
+    /// Delete a single image by ID (returns the internal path for file cleanup)
+    pub fn delete_image(&self, image_id: &str) -> ServiceResult<Option<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+
+        // First get the internal path and document_id so we can delete the file and update counts
+        let result: Option<(String, String)> = conn
+            .query_row(
+                "SELECT internal_path, document_id FROM document_images WHERE id = ?1",
+                params![image_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(DatabaseError::Query)?;
+
+        if let Some((path, doc_id)) = result {
+            // Delete the database record (embedding will cascade delete)
+            conn.execute(
+                "DELETE FROM document_images WHERE id = ?1",
+                params![image_id],
+            )
+            .map_err(DatabaseError::Query)?;
+
+            // Update the document's image count
+            conn.execute(
+                "UPDATE documents SET image_count = (SELECT COUNT(*) FROM document_images WHERE document_id = ?1), updated_at = datetime('now') WHERE id = ?1",
+                params![doc_id],
+            )
+            .map_err(DatabaseError::Query)?;
+
+            Ok(Some((path, doc_id)))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Update document processing status
     pub fn update_document_processing_status(
         &self,

@@ -80,6 +80,7 @@ pub fn router(service: Arc<SeneschalService>, config: &AppConfig) -> Router {
         .route("/images", get(list_images_handler))
         .route("/images/search", post(search_images_handler))
         .route("/images/{id}", get(get_image_handler))
+        .route("/images/{id}", delete(delete_image_handler))
         .route("/images/{id}/data", get(get_image_data_handler))
         .route("/images/{id}/deliver", post(deliver_image_handler))
         // Conversation endpoints
@@ -823,6 +824,25 @@ async fn get_image_handler(
         })?;
 
     Ok(Json(ImageDto::from(image)))
+}
+
+async fn delete_image_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<DeleteResponse>, I18nError> {
+    let deleted = state
+        .service
+        .delete_image(&id)
+        .map_err(|e| state.i18n_error(e))?;
+
+    if deleted {
+        Ok(Json(DeleteResponse {
+            success: true,
+            message: "Image deleted successfully".to_string(),
+        }))
+    } else {
+        Err(state.i18n_error(ServiceError::ImageNotFound { image_id: id }))
+    }
 }
 
 async fn get_image_data_handler(
