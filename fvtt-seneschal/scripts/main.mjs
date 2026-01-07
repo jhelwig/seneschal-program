@@ -493,6 +493,10 @@ class BackendClient {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${this.baseUrl}/api/documents`);
 
+      // Set a long timeout for PDF processing (5 minutes)
+      // Vision model captioning can take a while
+      xhr.timeout = 300000;
+
       xhr.upload.addEventListener("progress", (event) => {
         if (event.lengthComputable && onProgress) {
           const percent = Math.round((event.loaded / event.total) * 100);
@@ -501,6 +505,7 @@ class BackendClient {
       });
 
       xhr.addEventListener("load", () => {
+        console.debug("Upload response:", xhr.status, xhr.statusText, xhr.responseText);
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             resolve(JSON.parse(xhr.responseText));
@@ -508,12 +513,33 @@ class BackendClient {
             resolve({ success: true });
           }
         } else {
-          reject(new Error(`Upload failed: ${xhr.statusText}`));
+          // Try to extract error message from response body
+          let errorMessage = `HTTP ${xhr.status}`;
+          try {
+            const errorBody = JSON.parse(xhr.responseText);
+            if (errorBody.message) {
+              errorMessage = errorBody.message;
+            } else if (errorBody.error) {
+              errorMessage = errorBody.error;
+            }
+          } catch {
+            // If we can't parse JSON, use status text or response text
+            if (xhr.statusText) {
+              errorMessage = xhr.statusText;
+            } else if (xhr.responseText) {
+              errorMessage = xhr.responseText.substring(0, 200);
+            }
+          }
+          reject(new Error(`Upload failed: ${errorMessage}`));
         }
       });
 
       xhr.addEventListener("error", () => {
         reject(new Error("Upload failed: Network error"));
+      });
+
+      xhr.addEventListener("timeout", () => {
+        reject(new Error("Upload failed: Request timed out (server may still be processing)"));
       });
 
       xhr.send(formData);
