@@ -46,6 +46,10 @@ struct ImageInfo {
     stride: i32,
     has_alpha: bool,
     is_grayscale: bool,
+    /// Scale factor from PDF points to pixels (width)
+    scale_x: f64,
+    /// Scale factor from PDF points to pixels (height)
+    scale_y: f64,
 }
 
 /// Check if two rectangles overlap by more than a threshold percentage
@@ -209,6 +213,19 @@ fn alpha_blend(dst: image::Rgba<u8>, src: image::Rgba<u8>) -> image::Rgba<u8> {
     ])
 }
 
+/// Scale an image by a given factor using Lanczos3 filter
+fn scale_image(img: &RgbaImage, scale: f64) -> RgbaImage {
+    if (scale - 1.0).abs() < 0.01 {
+        // No significant scaling needed
+        return img.clone();
+    }
+
+    let new_width = ((img.width() as f64 * scale).ceil() as u32).max(1);
+    let new_height = ((img.height() as f64 * scale).ceil() as u32).max(1);
+
+    image::imageops::resize(img, new_width, new_height, image::imageops::FilterType::Lanczos3)
+}
+
 /// Composite a layer onto a canvas at the given offset
 fn composite_over(canvas: &mut RgbaImage, layer: &RgbaImage, offset_x: i32, offset_y: i32) {
     for (ly, row) in layer.rows().enumerate() {
@@ -247,8 +264,14 @@ fn calculate_group_bounds(images: &[ImageInfo], indices: &[usize]) -> Rectangle 
     }
 }
 
-/// Composite a group of images into a single image
-/// Layers are composited in reverse order (back to front based on list order)
+/// Composite a group of overlapping images into a single image.
+///
+/// Each image has a PDF bounding box (in points) and native pixel dimensions.
+/// The composite canvas is sized to encompass all bounding boxes at the highest
+/// available resolution (max pixels-per-point). Each image is then scaled to
+/// fill its own bounding box at the canvas resolution and placed accordingly.
+///
+/// Layers are composited back-to-front based on image_id (lower IDs = back layers).
 fn composite_group(images: &[ImageInfo], indices: &[usize]) -> Option<RgbaImage> {
     if indices.is_empty() {
         return None;
@@ -259,16 +282,28 @@ fn composite_group(images: &[ImageInfo], indices: &[usize]) -> Option<RgbaImage>
         return Some(convert_to_rgba(&images[indices[0]]));
     }
 
-    // Calculate bounds for the composite canvas
+    // Find the maximum scale factor (highest resolution image)
+    let max_scale = indices
+        .iter()
+        .map(|&i| images[i].scale_x.max(images[i].scale_y))
+        .fold(0.0_f64, f64::max);
+
+    if max_scale <= 0.0 {
+        return None;
+    }
+
+    // Calculate bounds in PDF points
     let bounds = calculate_group_bounds(images, indices);
-    let canvas_width = bounds.width().ceil() as u32;
-    let canvas_height = bounds.height().ceil() as u32;
+
+    // Calculate canvas size in pixels using the max scale factor
+    let canvas_width = (bounds.width() * max_scale).ceil() as u32;
+    let canvas_height = (bounds.height() * max_scale).ceil() as u32;
 
     if canvas_width == 0 || canvas_height == 0 {
         return None;
     }
 
-    // Create transparent canvas
+    // Create transparent canvas at full resolution
     let mut canvas = RgbaImage::new(canvas_width, canvas_height);
 
     // Sort indices by image_id ascending (lower IDs drawn first = back layer)
@@ -279,11 +314,26 @@ fn composite_group(images: &[ImageInfo], indices: &[usize]) -> Option<RgbaImage>
     // Composite each layer (back to front)
     for &idx in &sorted_indices {
         let info = &images[idx];
-        let layer = convert_to_rgba(info);
+        let mut layer = convert_to_rgba(info);
 
-        // Calculate offset relative to canvas
-        let offset_x = (info.area.x1.min(info.area.x2) - bounds.x1) as i32;
-        let offset_y = (info.area.y1.min(info.area.y2) - bounds.y1) as i32;
+        // Each image has a native resolution (pixels) and a PDF bounding box (points).
+        // To composite correctly, we need to scale each image so it fills its bounding
+        // box at the canvas resolution (max_scale pixels per point).
+        //
+        // scale_factor = (bounding_box_pts * max_scale) / native_pixels
+        //              = max_scale / (native_pixels / bounding_box_pts)
+        //              = max_scale / layer_scale
+        let layer_scale = info.scale_x.max(info.scale_y);
+        let scale_factor = max_scale / layer_scale;
+
+        if (scale_factor - 1.0).abs() > 0.01 {
+            // Scale image to fill its bounding box at canvas resolution
+            layer = scale_image(&layer, scale_factor);
+        }
+
+        // Calculate offset in pixels (convert PDF points to pixels using max_scale)
+        let offset_x = ((info.area.x1.min(info.area.x2) - bounds.x1) * max_scale) as i32;
+        let offset_y = ((info.area.y1.min(info.area.y2) - bounds.y1) * max_scale) as i32;
 
         composite_over(&mut canvas, &layer, offset_x, offset_y);
     }
@@ -568,6 +618,20 @@ impl IngestionService {
                 let surface_data =
                     unsafe { std::slice::from_raw_parts(data_ptr, data_len).to_vec() };
 
+                // Calculate scale factors from PDF points to pixels
+                let bounds_width = area.width();
+                let bounds_height = area.height();
+                let scale_x = if bounds_width > 0.0 {
+                    width as f64 / bounds_width
+                } else {
+                    1.0
+                };
+                let scale_y = if bounds_height > 0.0 {
+                    height as f64 / bounds_height
+                } else {
+                    1.0
+                };
+
                 page_images.push(ImageInfo {
                     image_id,
                     area,
@@ -577,6 +641,8 @@ impl IngestionService {
                     stride,
                     has_alpha,
                     is_grayscale,
+                    scale_x,
+                    scale_y,
                 });
             }
 
