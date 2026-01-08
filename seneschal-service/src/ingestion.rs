@@ -50,6 +50,12 @@ struct ImageInfo {
     scale_x: f64,
     /// Scale factor from PDF points to pixels (height)
     scale_y: f64,
+    /// Page number (0-indexed)
+    page_number: usize,
+    /// Page width in PDF points
+    page_width: f64,
+    /// Page height in PDF points
+    page_height: f64,
 }
 
 /// Check if two rectangles overlap by more than a threshold percentage
@@ -65,6 +71,8 @@ fn rectangles_overlap(a: &Rectangle, b: &Rectangle, threshold: f64) -> bool {
 }
 
 /// Group images by overlapping bounding boxes using union-find
+/// Note: This function is kept for potential future use in per-page-only grouping scenarios
+#[allow(dead_code)]
 fn group_by_overlap(images: &[ImageInfo]) -> Vec<Vec<usize>> {
     if images.is_empty() {
         return Vec::new();
@@ -116,6 +124,260 @@ fn group_by_overlap(images: &[ImageInfo]) -> Vec<Vec<usize>> {
     });
 
     result
+}
+
+/// Threshold for within-page overlap grouping
+const WITHIN_PAGE_OVERLAP_THRESHOLD: f64 = 0.7;
+
+/// Threshold for cross-page overlap grouping (lower since shadows often only partially overlap)
+const CROSS_PAGE_OVERLAP_THRESHOLD: f64 = 0.3;
+
+/// Directions an image can extend beyond page bounds
+#[derive(Debug, Default)]
+struct OverflowDirections {
+    right: bool, // x2 > page_width (check next page)
+    left: bool,  // x1 < 0 (check previous page)
+    down: bool,  // y2 > page_height (check next page for top-flip)
+    up: bool,    // y1 < 0 (check previous page for top-flip)
+}
+
+/// Check if an image extends beyond page bounds
+fn get_overflow_directions(info: &ImageInfo) -> OverflowDirections {
+    OverflowDirections {
+        right: info.area.x2 > info.page_width,
+        left: info.area.x1 < 0.0,
+        down: info.area.y2 > info.page_height,
+        up: info.area.y1 < 0.0,
+    }
+}
+
+/// Transform image bounds to adjacent page's coordinate space
+/// Returns the transformed rectangle and whether any part is on the target page
+fn transform_to_adjacent_page(
+    area: &Rectangle,
+    extends_right: bool,
+    extends_left: bool,
+    extends_down: bool,
+    extends_up: bool,
+    page_width: f64,
+    page_height: f64,
+) -> Rectangle {
+    let mut transformed = area.clone();
+
+    if extends_right {
+        // Image extends right onto next page: subtract page_width from x coordinates
+        transformed.x1 -= page_width;
+        transformed.x2 -= page_width;
+    } else if extends_left {
+        // Image extends left onto previous page: add page_width to x coordinates
+        transformed.x1 += page_width;
+        transformed.x2 += page_width;
+    }
+
+    if extends_down {
+        // Image extends down onto next page: subtract page_height from y coordinates
+        transformed.y1 -= page_height;
+        transformed.y2 -= page_height;
+    } else if extends_up {
+        // Image extends up onto previous page: add page_height to y coordinates
+        transformed.y1 += page_height;
+        transformed.y2 += page_height;
+    }
+
+    transformed
+}
+
+/// A group of images that should be composited together, potentially spanning multiple pages
+#[derive(Debug)]
+struct ImageGroup {
+    /// Indices into the all_images vec
+    image_indices: Vec<usize>,
+    /// The page this composite should be assigned to (by centroid)
+    assigned_page: usize,
+}
+
+/// Build groups considering cross-page overlaps
+/// Returns groups of image indices and their assigned page numbers
+fn build_cross_page_groups(all_images: &[ImageInfo]) -> Vec<ImageGroup> {
+    if all_images.is_empty() {
+        return Vec::new();
+    }
+
+    let n = all_images.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+
+    fn find(parent: &mut [usize], i: usize) -> usize {
+        if parent[i] != i {
+            parent[i] = find(parent, parent[i]);
+        }
+        parent[i]
+    }
+
+    fn union(parent: &mut [usize], i: usize, j: usize) {
+        let pi = find(parent, i);
+        let pj = find(parent, j);
+        if pi != pj {
+            parent[pi] = pj;
+        }
+    }
+
+    // First pass: group within-page overlaps (70% threshold)
+    for i in 0..n {
+        for j in (i + 1)..n {
+            // Only check same-page overlaps in this pass
+            if all_images[i].page_number == all_images[j].page_number
+                && rectangles_overlap(
+                    &all_images[i].area,
+                    &all_images[j].area,
+                    WITHIN_PAGE_OVERLAP_THRESHOLD,
+                )
+            {
+                union(&mut parent, i, j);
+            }
+        }
+    }
+
+    // Second pass: check cross-page overlaps (30% threshold)
+    for i in 0..n {
+        let overflow = get_overflow_directions(&all_images[i]);
+
+        // Check if this image extends beyond page bounds
+        if !overflow.right && !overflow.left && !overflow.down && !overflow.up {
+            continue;
+        }
+
+        let img_i = &all_images[i];
+
+        for (j, img_j) in all_images.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+
+            // Check if j is on an adjacent page in the right direction
+            let is_next_page = img_j.page_number == img_i.page_number + 1;
+            let is_prev_page = img_i.page_number > 0 && img_j.page_number == img_i.page_number - 1;
+
+            let check_horizontal =
+                (overflow.right && is_next_page) || (overflow.left && is_prev_page);
+            let check_vertical = (overflow.down && is_next_page) || (overflow.up && is_prev_page);
+
+            if !check_horizontal && !check_vertical {
+                continue;
+            }
+
+            // Transform coordinates to adjacent page's space
+            let transformed = transform_to_adjacent_page(
+                &img_i.area,
+                overflow.right && is_next_page,
+                overflow.left && is_prev_page,
+                overflow.down && is_next_page,
+                overflow.up && is_prev_page,
+                img_i.page_width,
+                img_i.page_height,
+            );
+
+            // Check overlap with lower threshold
+            if rectangles_overlap(&transformed, &img_j.area, CROSS_PAGE_OVERLAP_THRESHOLD) {
+                union(&mut parent, i, j);
+            }
+        }
+    }
+
+    // Collect groups
+    let mut groups_map: std::collections::HashMap<usize, Vec<usize>> =
+        std::collections::HashMap::new();
+    for i in 0..n {
+        let root = find(&mut parent, i);
+        groups_map.entry(root).or_default().push(i);
+    }
+
+    // Convert to ImageGroup with page assignment by centroid
+    let mut result: Vec<ImageGroup> = groups_map
+        .into_values()
+        .map(|indices| {
+            let assigned_page = calculate_centroid_page(all_images, &indices);
+            ImageGroup {
+                image_indices: indices,
+                assigned_page,
+            }
+        })
+        .collect();
+
+    // Sort by assigned page then by position
+    result.sort_by(|a, b| {
+        a.assigned_page.cmp(&b.assigned_page).then_with(|| {
+            let avg_y_a: f64 = a
+                .image_indices
+                .iter()
+                .map(|&i| all_images[i].area.y1)
+                .sum::<f64>()
+                / a.image_indices.len() as f64;
+            let avg_y_b: f64 = b
+                .image_indices
+                .iter()
+                .map(|&i| all_images[i].area.y1)
+                .sum::<f64>()
+                / b.image_indices.len() as f64;
+            avg_y_a
+                .partial_cmp(&avg_y_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    });
+
+    result
+}
+
+/// Calculate which page a group should be assigned to based on centroid location
+fn calculate_centroid_page(all_images: &[ImageInfo], indices: &[usize]) -> usize {
+    if indices.is_empty() {
+        return 0;
+    }
+
+    // For single-page groups, just use that page
+    let first_page = all_images[indices[0]].page_number;
+    if indices
+        .iter()
+        .all(|&i| all_images[i].page_number == first_page)
+    {
+        return first_page;
+    }
+
+    // For cross-page groups, calculate centroid in unified coordinate space
+    // We'll use the first page as reference and transform other pages' coordinates
+    let ref_page = indices
+        .iter()
+        .map(|&i| all_images[i].page_number)
+        .min()
+        .unwrap_or(0);
+    let ref_page_width = all_images
+        .iter()
+        .find(|img| img.page_number == ref_page)
+        .map(|img| img.page_width)
+        .unwrap_or(600.0);
+
+    let mut total_x = 0.0;
+    let mut count = 0.0;
+
+    for &idx in indices {
+        let img = &all_images[idx];
+        let page_offset = (img.page_number - ref_page) as f64 * ref_page_width;
+
+        let center_x = (img.area.x1 + img.area.x2) / 2.0 + page_offset;
+
+        total_x += center_x;
+        count += 1.0;
+    }
+
+    if count == 0.0 {
+        return first_page;
+    }
+
+    let centroid_x = total_x / count;
+
+    // Determine which page the centroid falls on
+    // centroid_x / page_width gives the page offset from ref_page
+    let page_offset = (centroid_x / ref_page_width).floor() as usize;
+    ref_page + page_offset
 }
 
 /// Convert an ImageInfo to an RGBA image
@@ -223,7 +485,12 @@ fn scale_image(img: &RgbaImage, scale: f64) -> RgbaImage {
     let new_width = ((img.width() as f64 * scale).ceil() as u32).max(1);
     let new_height = ((img.height() as f64 * scale).ceil() as u32).max(1);
 
-    image::imageops::resize(img, new_width, new_height, image::imageops::FilterType::Lanczos3)
+    image::imageops::resize(
+        img,
+        new_width,
+        new_height,
+        image::imageops::FilterType::Lanczos3,
+    )
 }
 
 /// Composite a layer onto a canvas at the given offset
@@ -264,12 +531,63 @@ fn calculate_group_bounds(images: &[ImageInfo], indices: &[usize]) -> Rectangle 
     }
 }
 
+/// Calculate the bounding box for a cross-page group, transforming coordinates
+/// to a unified coordinate space where pages are laid out horizontally.
+/// Returns (bounds, ref_page, ref_page_width) for use in offset calculations.
+fn calculate_cross_page_bounds(images: &[ImageInfo], indices: &[usize]) -> (Rectangle, usize, f64) {
+    // Find the reference page (minimum page number)
+    let ref_page = indices
+        .iter()
+        .map(|&i| images[i].page_number)
+        .min()
+        .unwrap_or(0);
+
+    let ref_page_width = images
+        .iter()
+        .find(|img| img.page_number == ref_page)
+        .map(|img| img.page_width)
+        .unwrap_or(600.0);
+
+    let mut min_x = f64::MAX;
+    let mut min_y = f64::MAX;
+    let mut max_x = f64::MIN;
+    let mut max_y = f64::MIN;
+
+    for &idx in indices {
+        let img = &images[idx];
+        // Transform x coordinates to unified space by adding page offset
+        let page_offset = (img.page_number - ref_page) as f64 * ref_page_width;
+
+        let x1_transformed = img.area.x1 + page_offset;
+        let x2_transformed = img.area.x2 + page_offset;
+
+        min_x = min_x.min(x1_transformed).min(x2_transformed);
+        min_y = min_y.min(img.area.y1).min(img.area.y2);
+        max_x = max_x.max(x1_transformed).max(x2_transformed);
+        max_y = max_y.max(img.area.y1).max(img.area.y2);
+    }
+
+    (
+        Rectangle {
+            x1: min_x,
+            y1: min_y,
+            x2: max_x,
+            y2: max_y,
+        },
+        ref_page,
+        ref_page_width,
+    )
+}
+
 /// Composite a group of overlapping images into a single image.
 ///
 /// Each image has a PDF bounding box (in points) and native pixel dimensions.
 /// The composite canvas is sized to encompass all bounding boxes at the highest
 /// available resolution (max pixels-per-point). Each image is then scaled to
 /// fill its own bounding box at the canvas resolution and placed accordingly.
+///
+/// For cross-page groups (images spanning multiple pages), coordinates are
+/// transformed to a unified space where pages are laid out horizontally.
 ///
 /// Layers are composited back-to-front based on image_id (lower IDs = back layers).
 fn composite_group(images: &[ImageInfo], indices: &[usize]) -> Option<RgbaImage> {
@@ -282,6 +600,10 @@ fn composite_group(images: &[ImageInfo], indices: &[usize]) -> Option<RgbaImage>
         return Some(convert_to_rgba(&images[indices[0]]));
     }
 
+    // Check if this is a cross-page group
+    let first_page = images[indices[0]].page_number;
+    let is_cross_page = indices.iter().any(|&i| images[i].page_number != first_page);
+
     // Find the maximum scale factor (highest resolution image)
     let max_scale = indices
         .iter()
@@ -292,8 +614,12 @@ fn composite_group(images: &[ImageInfo], indices: &[usize]) -> Option<RgbaImage>
         return None;
     }
 
-    // Calculate bounds in PDF points
-    let bounds = calculate_group_bounds(images, indices);
+    // Calculate bounds in PDF points (with transformation for cross-page groups)
+    let (bounds, ref_page, ref_page_width) = if is_cross_page {
+        calculate_cross_page_bounds(images, indices)
+    } else {
+        (calculate_group_bounds(images, indices), first_page, 0.0)
+    };
 
     // Calculate canvas size in pixels using the max scale factor
     let canvas_width = (bounds.width() * max_scale).ceil() as u32;
@@ -331,8 +657,16 @@ fn composite_group(images: &[ImageInfo], indices: &[usize]) -> Option<RgbaImage>
             layer = scale_image(&layer, scale_factor);
         }
 
+        // For cross-page groups, transform x coordinate to unified space
+        let page_offset = if is_cross_page {
+            (info.page_number - ref_page) as f64 * ref_page_width
+        } else {
+            0.0
+        };
+
         // Calculate offset in pixels (convert PDF points to pixels using max_scale)
-        let offset_x = ((info.area.x1.min(info.area.x2) - bounds.x1) * max_scale) as i32;
+        let offset_x =
+            ((info.area.x1.min(info.area.x2) + page_offset - bounds.x1) * max_scale) as i32;
         let offset_y = ((info.area.y1.min(info.area.y2) - bounds.y1) * max_scale) as i32;
 
         composite_over(&mut canvas, &layer, offset_x, offset_y);
@@ -517,7 +851,8 @@ impl IngestionService {
             }
         })?;
 
-        let mut all_images = Vec::new();
+        let mut all_document_images = Vec::new();
+        let mut all_page_images: Vec<ImageInfo> = Vec::new();
         let now = Utc::now();
         let n_pages = doc.n_pages();
 
@@ -537,6 +872,9 @@ impl IngestionService {
             if mappings.is_empty() {
                 continue;
             }
+
+            // Get page dimensions
+            let (page_width, page_height) = page.size();
 
             // Extract image info from this page
             let mut page_images: Vec<ImageInfo> = Vec::new();
@@ -643,6 +981,9 @@ impl IngestionService {
                     is_grayscale,
                     scale_x,
                     scale_y,
+                    page_number: page_num as usize,
+                    page_width,
+                    page_height,
                 });
             }
 
@@ -656,102 +997,142 @@ impl IngestionService {
                 "Found images on page"
             );
 
-            // Group images by overlapping bounding boxes
-            let groups = group_by_overlap(&page_images);
+            // Add to collection of all images (grouping happens after all pages are processed)
+            all_page_images.extend(page_images);
+        }
 
-            debug!(
-                page = page_num + 1,
-                groups = groups.len(),
-                "Grouped images into composites"
-            );
+        // Now group images considering cross-page overlaps
+        info!(
+            document_id = document_id,
+            total_images = all_page_images.len(),
+            "Building cross-page image groups"
+        );
 
-            // Composite each group and save
-            for (group_idx, group) in groups.iter().enumerate() {
-                let composited = match composite_group(&page_images, group) {
-                    Some(img) => img,
-                    None => continue,
-                };
+        let groups = build_cross_page_groups(&all_page_images);
 
-                let width = composited.width();
-                let height = composited.height();
+        info!(
+            document_id = document_id,
+            groups = groups.len(),
+            "Built image groups (including cross-page)"
+        );
 
-                // Skip images that are too small for vision models (need at least 32x32)
-                const MIN_IMAGE_SIZE: u32 = 32;
-                if width < MIN_IMAGE_SIZE || height < MIN_IMAGE_SIZE {
-                    debug!(
-                        page = page_num + 1,
-                        group = group_idx,
-                        width = width,
-                        height = height,
-                        "Skipping small image (below {}x{} threshold)",
-                        MIN_IMAGE_SIZE,
-                        MIN_IMAGE_SIZE
-                    );
-                    continue;
-                }
+        // Track how many images per page for indexing
+        let mut page_image_counts: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
 
-                // Save as WebP
-                let image_id = Uuid::new_v4().to_string();
-                let page_display = page_num + 1;
-                let webp_filename = format!("page_{}_img_{}.webp", page_display, group_idx);
-                let webp_path = images_dir.join(&webp_filename);
+        // Composite each group and save
+        for group in groups.iter() {
+            let composited = match composite_group(&all_page_images, &group.image_indices) {
+                Some(img) => img,
+                None => continue,
+            };
 
-                let file = match File::create(&webp_path) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        warn!(
-                            page = page_display,
-                            group = group_idx,
-                            error = %e,
-                            "Failed to create image file"
-                        );
-                        continue;
-                    }
-                };
+            let width = composited.width();
+            let height = composited.height();
 
-                let encoder = WebPEncoder::new_lossless(file);
-                if let Err(e) = encoder.write_image(
-                    composited.as_raw(),
-                    width,
-                    height,
-                    image::ExtendedColorType::Rgba8,
-                ) {
-                    warn!(
-                        page = page_display,
-                        group = group_idx,
-                        error = %e,
-                        "Failed to encode image as WebP"
-                    );
-                    let _ = std::fs::remove_file(&webp_path);
-                    continue;
-                }
-
-                all_images.push(DocumentImage {
-                    id: image_id,
-                    document_id: document_id.to_string(),
-                    page_number: page_display,
-                    image_index: group_idx as i32,
-                    internal_path: webp_path.to_string_lossy().to_string(),
-                    mime_type: "image/webp".to_string(),
-                    width: Some(width),
-                    height: Some(height),
-                    description: None,
-                    created_at: now,
-                });
-
+            // Skip images that are too small for vision models (need at least 32x32)
+            const MIN_IMAGE_SIZE: u32 = 32;
+            if width < MIN_IMAGE_SIZE || height < MIN_IMAGE_SIZE {
                 debug!(
-                    page = page_display,
-                    group = group_idx,
-                    layers = group.len(),
+                    page = group.assigned_page + 1,
                     width = width,
                     height = height,
-                    "Extracted composited image"
+                    "Skipping small image (below {}x{} threshold)",
+                    MIN_IMAGE_SIZE,
+                    MIN_IMAGE_SIZE
+                );
+                continue;
+            }
+
+            // Get the image index for this page
+            let page_idx = *page_image_counts.get(&group.assigned_page).unwrap_or(&0);
+            page_image_counts.insert(group.assigned_page, page_idx + 1);
+
+            // Save as WebP
+            let image_id = Uuid::new_v4().to_string();
+            let page_display = (group.assigned_page + 1) as i32;
+            let webp_filename = format!("page_{}_img_{}.webp", page_display, page_idx);
+            let webp_path = images_dir.join(&webp_filename);
+
+            let file = match File::create(&webp_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    warn!(
+                        page = page_display,
+                        group = page_idx,
+                        error = %e,
+                        "Failed to create image file"
+                    );
+                    continue;
+                }
+            };
+
+            let encoder = WebPEncoder::new_lossless(file);
+            if let Err(e) = encoder.write_image(
+                composited.as_raw(),
+                width,
+                height,
+                image::ExtendedColorType::Rgba8,
+            ) {
+                warn!(
+                    page = page_display,
+                    group = page_idx,
+                    error = %e,
+                    "Failed to encode image as WebP"
+                );
+                let _ = std::fs::remove_file(&webp_path);
+                continue;
+            }
+
+            // Log if this was a cross-page composite
+            let is_cross_page = group
+                .image_indices
+                .iter()
+                .map(|&i| all_page_images[i].page_number)
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                > 1;
+            if is_cross_page {
+                let source_pages: Vec<_> = group
+                    .image_indices
+                    .iter()
+                    .map(|&i| all_page_images[i].page_number + 1)
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                debug!(
+                    assigned_page = page_display,
+                    source_pages = ?source_pages,
+                    layers = group.image_indices.len(),
+                    "Created cross-page composite"
                 );
             }
+
+            all_document_images.push(DocumentImage {
+                id: image_id,
+                document_id: document_id.to_string(),
+                page_number: page_display,
+                image_index: page_idx as i32,
+                internal_path: webp_path.to_string_lossy().to_string(),
+                mime_type: "image/webp".to_string(),
+                width: Some(width),
+                height: Some(height),
+                description: None,
+                created_at: now,
+            });
+
+            debug!(
+                page = page_display,
+                group = page_idx,
+                layers = group.image_indices.len(),
+                width = width,
+                height = height,
+                "Extracted composited image"
+            );
         }
 
         // Sort by page number then image index for consistent ordering
-        all_images.sort_by(|a, b| {
+        all_document_images.sort_by(|a, b| {
             a.page_number
                 .cmp(&b.page_number)
                 .then(a.image_index.cmp(&b.image_index))
@@ -759,11 +1140,11 @@ impl IngestionService {
 
         info!(
             document_id = document_id,
-            total_images = all_images.len(),
+            total_images = all_document_images.len(),
             "Extracted and saved images from PDF"
         );
 
-        Ok(all_images)
+        Ok(all_document_images)
     }
 
     /// Get the path where an image should be copied to in FVTT assets
