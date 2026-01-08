@@ -1060,6 +1060,40 @@ When asked about rules or game content, use document_search to find relevant inf
                         "Captioning remaining images"
                     );
 
+                    // Extract page text for context
+                    // Collect all unique pages from images to caption
+                    let unique_pages: std::collections::HashSet<i32> = images_to_caption
+                        .iter()
+                        .flat_map(|img| {
+                            img.source_pages
+                                .clone()
+                                .unwrap_or_else(|| vec![img.page_number])
+                        })
+                        .collect();
+
+                    let page_list: Vec<i32> = unique_pages.into_iter().collect();
+                    let page_texts = match self
+                        .ingestion
+                        .extract_pdf_page_text(&file_path, &page_list)
+                    {
+                        Ok(texts) => {
+                            debug!(
+                                doc_id = %doc_id,
+                                pages = texts.len(),
+                                "Extracted page text for image captioning context"
+                            );
+                            texts
+                        }
+                        Err(e) => {
+                            warn!(
+                                doc_id = %doc_id,
+                                error = %e,
+                                "Failed to extract page text, captioning without context"
+                            );
+                            std::collections::HashMap::new()
+                        }
+                    };
+
                     for (i, image) in images_to_caption.iter().enumerate() {
                         let current_progress = already_captioned + i + 1;
                         let _ = self.db.update_document_progress(
@@ -1075,8 +1109,32 @@ When asked about rules or game content, use document_search to find relevant inf
                             "Captioning image"
                         );
 
+                        // Build page context for this image
+                        let mut source_pages = image
+                            .source_pages
+                            .clone()
+                            .unwrap_or_else(|| vec![image.page_number]);
+                        source_pages.sort();
+                        let context: String = source_pages
+                            .iter()
+                            .filter_map(|p| {
+                                page_texts
+                                    .get(p)
+                                    .map(|t| format!("--- Page {} ---\n{}", p, t))
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+                        let page_context = if context.is_empty() {
+                            None
+                        } else {
+                            Some(context.as_str())
+                        };
+
                         let image_path = std::path::Path::new(&image.internal_path);
-                        match self.caption_image(image_path, model).await {
+                        match self
+                            .caption_image(image_path, model, title, page_context)
+                            .await
+                        {
                             Ok(Some(description)) => {
                                 if let Err(e) =
                                     self.db.update_image_description(&image.id, &description)
@@ -1295,10 +1353,18 @@ When asked about rules or game content, use document_search to find relevant inf
     }
 
     /// Caption an image using the specified vision model
+    ///
+    /// # Arguments
+    /// * `image_path` - Path to the image file
+    /// * `vision_model` - Name of the vision model to use
+    /// * `document_title` - Title of the document containing the image
+    /// * `page_context` - Optional text content from the page(s) where the image appears
     pub async fn caption_image(
         &self,
         image_path: &std::path::Path,
         vision_model: &str,
+        document_title: &str,
+        page_context: Option<&str>,
     ) -> ServiceResult<Option<String>> {
         // Read and encode image as base64
         let image_data = std::fs::read(image_path)
@@ -1306,12 +1372,31 @@ When asked about rules or game content, use document_search to find relevant inf
         let image_base64 =
             base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &image_data);
 
-        let prompt = "Describe this image from a tabletop RPG rulebook or supplement. \
+        // Build prompt with document title and optional page context
+        // Page context goes at the end for easier truncation if needed
+        let base_prompt = format!(
+            "Describe this image from the tabletop RPG document \"{}\". \
             Focus on what the image depicts (characters, creatures, locations, items, maps, etc.) \
             and any text visible in the image. Be concise but descriptive. \
-            This description will be used to help game masters find relevant images.";
+            This description will be used to help game masters find relevant images.",
+            document_title
+        );
 
-        let message = crate::ollama::ChatMessage::user_with_image(prompt, image_base64);
+        let prompt = if let Some(context) = page_context {
+            if context.is_empty() {
+                base_prompt
+            } else {
+                format!(
+                    "{}\n\n\
+                    The image appears on a page with the following text for additional context:\n\n{}",
+                    base_prompt, context
+                )
+            }
+        } else {
+            base_prompt
+        };
+
+        let message = crate::ollama::ChatMessage::user_with_image(&prompt, image_base64);
 
         let description = self
             .ollama

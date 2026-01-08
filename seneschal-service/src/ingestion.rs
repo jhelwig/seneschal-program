@@ -824,6 +824,64 @@ impl IngestionService {
         Ok(ExtractedContent { sections })
     }
 
+    /// Extract text from specific pages of a PDF
+    /// Returns a HashMap of page_number (1-indexed) -> page_text
+    pub fn extract_pdf_page_text(
+        &self,
+        path: &Path,
+        page_numbers: &[i32],
+    ) -> ServiceResult<std::collections::HashMap<i32, String>> {
+        use std::collections::HashMap;
+
+        if page_numbers.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let pdfium = Pdfium::default();
+        let document = pdfium
+            .load_pdf_from_file(path, None)
+            .map_err(|e| ProcessingError::TextExtraction {
+                page: 0,
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Failed to load PDF: {:?}", e),
+                )),
+            })?;
+
+        let page_count = document.pages().len() as i32;
+        let mut result = HashMap::new();
+
+        for &page_num in page_numbers {
+            // Skip invalid page numbers
+            if page_num < 1 || page_num > page_count {
+                warn!(
+                    page = page_num,
+                    total_pages = page_count,
+                    "Requested page number out of range"
+                );
+                continue;
+            }
+
+            let page_index = (page_num - 1) as u16;
+            if let Ok(page) = document.pages().get(page_index) {
+                if let Ok(text) = page.text() {
+                    let page_text = text.all().trim().to_string();
+                    if !page_text.is_empty() {
+                        result.insert(page_num, page_text);
+                    }
+                }
+            }
+        }
+
+        debug!(
+            requested_pages = page_numbers.len(),
+            extracted_pages = result.len(),
+            "Extracted page text from PDF"
+        );
+
+        Ok(result)
+    }
+
     /// Extract images from a PDF document and save them as WebP files
     /// Returns a list of DocumentImage records (without descriptions - those are added separately)
     ///
@@ -1084,22 +1142,19 @@ impl IngestionService {
                 continue;
             }
 
-            // Log if this was a cross-page composite
-            let is_cross_page = group
+            // Collect source pages for this image (may span multiple pages for composites)
+            let mut source_pages: Vec<i32> = group
                 .image_indices
                 .iter()
-                .map(|&i| all_page_images[i].page_number)
+                .map(|&i| (all_page_images[i].page_number + 1) as i32)
                 .collect::<std::collections::HashSet<_>>()
-                .len()
-                > 1;
+                .into_iter()
+                .collect();
+            source_pages.sort();
+
+            // Log if this was a cross-page composite
+            let is_cross_page = source_pages.len() > 1;
             if is_cross_page {
-                let source_pages: Vec<_> = group
-                    .image_indices
-                    .iter()
-                    .map(|&i| all_page_images[i].page_number + 1)
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .collect();
                 debug!(
                     assigned_page = page_display,
                     source_pages = ?source_pages,
@@ -1118,6 +1173,7 @@ impl IngestionService {
                 width: Some(width),
                 height: Some(height),
                 description: None,
+                source_pages: Some(source_pages),
                 created_at: now,
             });
 
