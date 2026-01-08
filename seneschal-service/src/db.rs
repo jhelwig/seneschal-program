@@ -1185,8 +1185,7 @@ impl Database {
             .query_map(params![document_id], |row| {
                 let created_at_str: String = row.get(9)?;
                 let source_pages_json: Option<String> = row.get(10)?;
-                let source_pages = source_pages_json
-                    .and_then(|s| serde_json::from_str(&s).ok());
+                let source_pages = source_pages_json.and_then(|s| serde_json::from_str(&s).ok());
                 Ok(DocumentImage {
                     id: row.get(0)?,
                     document_id: row.get(1)?,
@@ -1467,8 +1466,7 @@ impl DocumentImage {
     fn from_row(row: &Row<'_>) -> Result<Self, rusqlite::Error> {
         let created_at_str: String = row.get(9)?;
         let source_pages_json: Option<String> = row.get(10)?;
-        let source_pages = source_pages_json
-            .and_then(|s| serde_json::from_str(&s).ok());
+        let source_pages = source_pages_json.and_then(|s| serde_json::from_str(&s).ok());
 
         Ok(Self {
             id: row.get(0)?,

@@ -838,15 +838,16 @@ impl IngestionService {
         }
 
         let pdfium = Pdfium::default();
-        let document = pdfium
-            .load_pdf_from_file(path, None)
-            .map_err(|e| ProcessingError::TextExtraction {
-                page: 0,
-                source: Box::new(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to load PDF: {:?}", e),
-                )),
-            })?;
+        let document =
+            pdfium
+                .load_pdf_from_file(path, None)
+                .map_err(|e| ProcessingError::TextExtraction {
+                    page: 0,
+                    source: Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Failed to load PDF: {:?}", e),
+                    )),
+                })?;
 
         let page_count = document.pages().len() as i32;
         let mut result = HashMap::new();

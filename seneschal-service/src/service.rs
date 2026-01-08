@@ -1072,27 +1072,25 @@ When asked about rules or game content, use document_search to find relevant inf
                         .collect();
 
                     let page_list: Vec<i32> = unique_pages.into_iter().collect();
-                    let page_texts = match self
-                        .ingestion
-                        .extract_pdf_page_text(&file_path, &page_list)
-                    {
-                        Ok(texts) => {
-                            debug!(
-                                doc_id = %doc_id,
-                                pages = texts.len(),
-                                "Extracted page text for image captioning context"
-                            );
-                            texts
-                        }
-                        Err(e) => {
-                            warn!(
-                                doc_id = %doc_id,
-                                error = %e,
-                                "Failed to extract page text, captioning without context"
-                            );
-                            std::collections::HashMap::new()
-                        }
-                    };
+                    let page_texts =
+                        match self.ingestion.extract_pdf_page_text(&file_path, &page_list) {
+                            Ok(texts) => {
+                                debug!(
+                                    doc_id = %doc_id,
+                                    pages = texts.len(),
+                                    "Extracted page text for image captioning context"
+                                );
+                                texts
+                            }
+                            Err(e) => {
+                                warn!(
+                                    doc_id = %doc_id,
+                                    error = %e,
+                                    "Failed to extract page text, captioning without context"
+                                );
+                                std::collections::HashMap::new()
+                            }
+                        };
 
                     for (i, image) in images_to_caption.iter().enumerate() {
                         let current_progress = already_captioned + i + 1;
