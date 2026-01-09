@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, AssetsAccess};
 use crate::db::{
     Conversation, ConversationMessage, ConversationMetadata, Database, Document, MessageRole,
     ProcessingStatus, ToolCallRecord, ToolResultRecord,
@@ -860,6 +860,90 @@ When asked about rules or game content, use document_search to find relevant inf
                     }
                     Ok(None) => ToolResult::error(call.id.clone(), "Image not found".to_string()),
                     Err(e) => ToolResult::error(call.id.clone(), e.to_string()),
+                }
+            }
+            "image_deliver" => {
+                let image_id = call
+                    .args
+                    .get("image_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let target_path = call
+                    .args
+                    .get("target_path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                // Get the image
+                let img = match self.db.get_document_image(image_id) {
+                    Ok(Some(img)) => {
+                        if !img.access_level.accessible_by(user_context.role) {
+                            return ToolResult::error(call.id.clone(), "Access denied".to_string());
+                        }
+                        img
+                    }
+                    Ok(None) => {
+                        return ToolResult::error(call.id.clone(), "Image not found".to_string())
+                    }
+                    Err(e) => return ToolResult::error(call.id.clone(), e.to_string()),
+                };
+
+                // Determine the FVTT path
+                let fvtt_path = target_path.unwrap_or_else(|| {
+                    IngestionService::fvtt_image_path(
+                        &img.document_title,
+                        img.image.page_number,
+                        img.image.description.as_deref(),
+                    )
+                    .to_string_lossy()
+                    .to_string()
+                });
+
+                // Check assets access mode
+                match self.config.fvtt.check_assets_access() {
+                    AssetsAccess::Direct(assets_dir) => {
+                        // Create target directory
+                        let full_path = assets_dir.join(&fvtt_path);
+                        if let Some(parent) = full_path.parent()
+                            && let Err(e) = std::fs::create_dir_all(parent)
+                        {
+                            return ToolResult::error(
+                                call.id.clone(),
+                                format!("Failed to create directory: {}", e),
+                            );
+                        }
+
+                        // Copy file
+                        if let Err(e) = std::fs::copy(&img.image.internal_path, &full_path) {
+                            return ToolResult::error(
+                                call.id.clone(),
+                                format!("Failed to copy image: {}", e),
+                            );
+                        }
+
+                        ToolResult::success(
+                            call.id.clone(),
+                            serde_json::json!({
+                                "success": true,
+                                "mode": "direct",
+                                "fvtt_path": fvtt_path,
+                                "message": format!("Image delivered to FVTT assets at {}", fvtt_path)
+                            }),
+                        )
+                    }
+                    AssetsAccess::Shuttle => {
+                        // Cannot directly deliver, return info for client to handle
+                        ToolResult::success(
+                            call.id.clone(),
+                            serde_json::json!({
+                                "success": false,
+                                "mode": "shuttle",
+                                "image_id": image_id,
+                                "suggested_path": fvtt_path,
+                                "message": "Direct delivery not available. Use the FVTT module to fetch and deliver this image."
+                            }),
+                        )
+                    }
                 }
             }
             "system_schema" => {

@@ -711,6 +711,27 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
         OllamaToolDefinition {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
+                name: "image_deliver".to_string(),
+                description: "Copy an image to the Foundry VTT assets directory so it can be used in scenes, actors, etc. Returns the FVTT path to use.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "image_id": {
+                            "type": "string",
+                            "description": "The image ID to deliver"
+                        },
+                        "target_path": {
+                            "type": "string",
+                            "description": "Optional: custom path within FVTT assets (default: auto-generated from document title and page)"
+                        }
+                    },
+                    "required": ["image_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
                 name: "fvtt_read".to_string(),
                 description: "Read a Foundry VTT document (Actor, Item, etc.). Respects user permissions.".to_string(),
                 parameters: serde_json::json!({
@@ -904,6 +925,7 @@ pub fn classify_tool(tool_name: &str) -> ToolLocation {
         | "image_list"
         | "image_search"
         | "image_get"
+        | "image_deliver"
         | "system_schema"
         | "traveller_uwp_parse"
         | "traveller_jump_calc"
