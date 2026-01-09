@@ -66,6 +66,16 @@ POST /api/chat → SeneschalService.chat() → run_agentic_loop()
 | `tools.rs` | Tool definitions, internal vs external classification |
 | `config.rs` | Layered config (defaults → config.toml → env vars) |
 
+### Image Extraction Purpose
+
+PDF images are extracted as discrete, reusable assets for Foundry VTT:
+- **Tokens** - character/creature portraits for use on maps
+- **Actor images** - profile images for NPCs, monsters, vehicles
+- **Item images** - equipment, weapons, gear illustrations
+- **Journal images** - maps, diagrams, illustrations for handouts
+
+This means "render the page region" is **never** an acceptable approach for image extraction - we need the actual image data, not a screenshot of where it appears on the page. Images must be extracted as individual assets that can be dragged into FVTT and used independently of their PDF context.
+
 ### Tool Classification
 
 Tools are classified as **internal** (executed by backend) or **external** (requested from FVTT client):

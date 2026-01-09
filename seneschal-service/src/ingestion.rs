@@ -16,7 +16,7 @@ use crate::error::{ProcessingError, ServiceError, ServiceResult};
 use crate::tools::AccessLevel;
 
 /// Rectangle representing image position on a PDF page
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct Rectangle {
     x1: f64,
     y1: f64,
@@ -60,6 +60,16 @@ struct ImageInfo {
     page_height: f64,
     /// Transformation matrix from PDF CTM (if found)
     transform: Option<[f64; 6]>,
+    /// Pixel crop region when a clip_rect was applied (x, y, width, height in pixels)
+    /// If Some, only this portion of the image should be used during compositing
+    crop_pixels: Option<(u32, u32, u32, u32)>,
+    /// Soft mask (SMask) data for transparency, if the image has one
+    /// This is raw grayscale pixel data where 0 = transparent, 255 = opaque
+    smask_data: Option<Vec<u8>>,
+    /// Width of the SMask image in pixels
+    smask_width: Option<u32>,
+    /// Height of the SMask image in pixels
+    smask_height: Option<u32>,
 }
 
 /// Check if two rectangles overlap by more than a threshold percentage
@@ -166,7 +176,7 @@ fn transform_to_adjacent_page(
     page_width: f64,
     page_height: f64,
 ) -> Rectangle {
-    let mut transformed = area.clone();
+    let mut transformed = *area;
 
     if extends_right {
         // Image extends right onto next page: subtract page_width from x coordinates
@@ -451,6 +461,56 @@ fn convert_to_rgba(info: &ImageInfo) -> RgbaImage {
     img
 }
 
+/// Apply a soft mask (SMask) to an RGBA image
+/// The SMask is grayscale data where 0 = transparent, 255 = opaque
+/// This replaces the image's alpha channel with the SMask values
+fn apply_smask(img: &mut RgbaImage, smask_data: &[u8], smask_width: u32, smask_height: u32) {
+    let img_width = img.width();
+    let img_height = img.height();
+
+    // If SMask dimensions match the image, apply directly
+    if smask_width == img_width && smask_height == img_height {
+        let expected_size = (smask_width * smask_height) as usize;
+        if smask_data.len() >= expected_size {
+            for y in 0..img_height {
+                for x in 0..img_width {
+                    let smask_idx = (y * smask_width + x) as usize;
+                    let alpha = smask_data[smask_idx];
+                    let pixel = img.get_pixel_mut(x, y);
+                    pixel[3] = alpha;
+                }
+            }
+        }
+    } else {
+        // SMask dimensions differ - scale the mask to match image dimensions
+        // Create a grayscale image from SMask data and resize it
+        let expected_size = (smask_width * smask_height) as usize;
+        if smask_data.len() >= expected_size {
+            // Create grayscale image from SMask data
+            let smask_img: image::GrayImage =
+                image::GrayImage::from_raw(smask_width, smask_height, smask_data.to_vec())
+                    .unwrap_or_else(|| image::GrayImage::new(1, 1));
+
+            // Resize SMask to match image dimensions
+            let scaled_smask = image::imageops::resize(
+                &smask_img,
+                img_width,
+                img_height,
+                image::imageops::FilterType::Lanczos3,
+            );
+
+            // Apply scaled SMask as alpha channel
+            for y in 0..img_height {
+                for x in 0..img_width {
+                    let alpha = scaled_smask.get_pixel(x, y)[0];
+                    let pixel = img.get_pixel_mut(x, y);
+                    pixel[3] = alpha;
+                }
+            }
+        }
+    }
+}
+
 /// Alpha blend two pixels (Porter-Duff "over" operation)
 fn alpha_blend(dst: image::Rgba<u8>, src: image::Rgba<u8>) -> image::Rgba<u8> {
     let src_a = src[3] as f32 / 255.0;
@@ -602,15 +662,41 @@ fn composite_group(images: &[ImageInfo], indices: &[usize]) -> Option<RgbaImage>
     }
 
     if indices.len() == 1 {
-        // Single image - convert to RGBA and apply transform if needed
+        // Single image - convert to RGBA, apply SMask if present, crop, then transform
         let info = &images[indices[0]];
         let mut img = convert_to_rgba(info);
+
+        // Apply soft mask (SMask) if present - this sets the alpha channel
+        if let (Some(smask_data), Some(smask_w), Some(smask_h)) =
+            (&info.smask_data, info.smask_width, info.smask_height)
+        {
+            trace!(
+                page = info.page_number + 1,
+                image_id = info.image_id,
+                smask_size = format!("{}x{}", smask_w, smask_h),
+                image_size = format!("{}x{}", img.width(), img.height()),
+                "Applying SMask to single image"
+            );
+            apply_smask(&mut img, smask_data, smask_w, smask_h);
+        }
+
+        // Apply pixel crop if present (from PDF clip_rect)
+        if let Some((cx, cy, cw, ch)) = info.crop_pixels {
+            trace!(
+                page = info.page_number + 1,
+                image_id = info.image_id,
+                crop = format!("({}, {}) {}x{}", cx, cy, cw, ch),
+                original_size = format!("{}x{}", img.width(), img.height()),
+                "Applying crop to single image"
+            );
+            img = image::imageops::crop_imm(&img, cx, cy, cw, ch).to_image();
+        }
 
         // Apply transformation if present and needed
         if let Some(ref matrix) = info.transform
             && needs_transformation(matrix)
         {
-            info!(
+            trace!(
                 page = info.page_number + 1,
                 image_id = info.image_id,
                 matrix = ?matrix,
@@ -664,11 +750,37 @@ fn composite_group(images: &[ImageInfo], indices: &[usize]) -> Option<RgbaImage>
         let info = &images[idx];
         let mut layer = convert_to_rgba(info);
 
+        // Apply soft mask (SMask) if present - this sets the alpha channel
+        if let (Some(smask_data), Some(smask_w), Some(smask_h)) =
+            (&info.smask_data, info.smask_width, info.smask_height)
+        {
+            trace!(
+                page = info.page_number + 1,
+                image_id = info.image_id,
+                smask_size = format!("{}x{}", smask_w, smask_h),
+                layer_size = format!("{}x{}", layer.width(), layer.height()),
+                "Applying SMask to layer in composite"
+            );
+            apply_smask(&mut layer, smask_data, smask_w, smask_h);
+        }
+
+        // Apply pixel crop if present (from PDF clip_rect)
+        if let Some((cx, cy, cw, ch)) = info.crop_pixels {
+            trace!(
+                page = info.page_number + 1,
+                image_id = info.image_id,
+                crop = format!("({}, {}) {}x{}", cx, cy, cw, ch),
+                original_size = format!("{}x{}", layer.width(), layer.height()),
+                "Applying crop to layer in composite"
+            );
+            layer = image::imageops::crop_imm(&layer, cx, cy, cw, ch).to_image();
+        }
+
         // Apply transformation if present and needed
         if let Some(ref matrix) = info.transform
             && needs_transformation(matrix)
         {
-            info!(
+            trace!(
                 page = info.page_number + 1,
                 image_id = info.image_id,
                 matrix = ?matrix,
@@ -731,6 +843,16 @@ struct ImageTransform {
     /// Axis-aligned bounding box computed from CTM (for rotated images)
     /// This gives the TRUE position on the page after transformation
     computed_bounds: Option<(f64, f64, f64, f64)>, // (x1, y1, x2, y2)
+    /// Clipping rectangle active when the image was drawn (if any)
+    /// This should be used to constrain the visible area of the image
+    clip_rect: Option<(f64, f64, f64, f64)>, // (x1, y1, x2, y2)
+    /// Soft mask (SMask) data for transparency, if the image has one
+    /// This is raw grayscale pixel data where 0 = transparent, 255 = opaque
+    smask_data: Option<Vec<u8>>,
+    /// Width of the SMask image in pixels
+    smask_width: Option<u32>,
+    /// Height of the SMask image in pixels
+    smask_height: Option<u32>,
 }
 
 /// Compute the axis-aligned bounding box from a CTM
@@ -858,35 +980,96 @@ fn extract_image_transforms_with_qpdf(
 
             let content = String::from_utf8_lossy(&data);
 
-            // Parse content stream for CTM + image draw commands
-            // Pattern: [a b c d e f] cm ... /ImN Do
-            if let Some(transform) = parse_content_stream_for_ctm(&content, &key) {
+            // Parse content stream for all CTM + image draw commands
+            // Pattern: [a b c d e f] cm ... /ImN Do (may occur multiple times)
+            let found_transforms = parse_content_stream_for_all_ctms(&content);
+
+            // Get Form's nested XObject dictionary to look up SMasks
+            let form_xobjects_dict: Option<qpdf::QPdfDictionary> = xobject_dict
+                .get("/Resources")
+                .and_then(|r| {
+                    let r_dict: qpdf::QPdfDictionary = r.into();
+                    r_dict.get("/XObject")
+                })
+                .map(|x| x.into());
+
+            for mut transform in found_transforms {
                 total_with_ctm += 1;
 
-                // Only store transforms that indicate rotation/mirroring
-                if needs_transformation(&transform.matrix) {
-                    info!(
+                // Try to extract SMask data for this image
+                if let Some(ref nested_xobjects) = form_xobjects_dict {
+                    let image_name = format!("/{}", transform.xobject_name);
+                    if let Some(image_obj) = nested_xobjects.get(&image_name)
+                        && image_obj.get_type() == QPdfObjectType::Stream
+                    {
+                        let image_stream: QPdfStream = image_obj.into();
+                        let image_dict = image_stream.get_dictionary();
+
+                        if let Some(smask_ref) = image_dict.get("/SMask") {
+                            let smask_id = smask_ref.get_id();
+                            let smask_gen = smask_ref.get_generation();
+
+                            if let Some(smask_obj) = pdf.get_object_by_id(smask_id, smask_gen)
+                                && smask_obj.get_type() == QPdfObjectType::Stream
+                            {
+                                let smask_stream: QPdfStream = smask_obj.into();
+                                let smask_dict = smask_stream.get_dictionary();
+
+                                // Extract SMask dimensions
+                                let width: Option<u32> = smask_dict
+                                    .get("/Width")
+                                    .and_then(|w| format!("{}", w).parse().ok());
+                                let height: Option<u32> = smask_dict
+                                    .get("/Height")
+                                    .and_then(|h| format!("{}", h).parse().ok());
+
+                                // Extract SMask data
+                                if let Ok(smask_data) =
+                                    smask_stream.get_data(StreamDecodeLevel::All)
+                                {
+                                    transform.smask_data = Some(smask_data.to_vec());
+                                    transform.smask_width = width;
+                                    transform.smask_height = height;
+
+                                    trace!(
+                                        page = page_idx + 1,
+                                        image = %transform.xobject_name,
+                                        smask_width = ?width,
+                                        smask_height = ?height,
+                                        smask_bytes = transform.smask_data.as_ref().map(|d| d.len()),
+                                        "Extracted SMask data for image"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Store transforms that indicate rotation/mirroring, have a clip_rect, or have SMask
+                let has_rotation = needs_transformation(&transform.matrix);
+                let has_clip = transform.clip_rect.is_some();
+                let has_smask = transform.smask_data.is_some();
+
+                if has_rotation || has_clip || has_smask {
+                    trace!(
                         page = page_idx + 1,
-                        xobject = %transform.xobject_name,
+                        form_xobject = %key,
+                        image_xobject = %transform.xobject_name,
                         matrix = ?transform.matrix,
                         expected_width = format!("{:.1}", transform.expected_width),
                         expected_height = format!("{:.1}", transform.expected_height),
-                        "Found rotation/mirroring CTM in Form XObject"
+                        has_rotation = has_rotation,
+                        clip_rect = ?transform.clip_rect,
+                        has_smask = has_smask,
+                        "Found CTM with rotation/mirroring, clip_rect, or SMask in Form XObject"
                     );
                     transforms.entry(page_idx).or_default().push(transform);
-                } else {
-                    trace!(
-                        page = page_idx + 1,
-                        xobject = %transform.xobject_name,
-                        matrix = ?transform.matrix,
-                        "Form XObject has identity-like CTM (no rotation/mirroring)"
-                    );
                 }
             }
         }
     }
 
-    info!(
+    debug!(
         total_form_xobjects = total_form_xobjects,
         form_xobjects_with_ctm = total_with_ctm,
         transforms_with_rotation = transforms.values().map(|v| v.len()).sum::<usize>(),
@@ -897,16 +1080,19 @@ fn extract_image_transforms_with_qpdf(
     Ok(transforms)
 }
 
-/// Parse a PDF content stream to extract the CTM applied to images
-/// Returns the cumulative CTM if a cm operator and image draw (Do) are found
-/// Captures the CTM at the moment of the Do command, not after graphics state restore
-fn parse_content_stream_for_ctm(content: &str, xobject_name: &str) -> Option<ImageTransform> {
-    // Track graphics state stack for cumulative CTM
+/// Parse a PDF content stream to extract all CTMs and clip rects applied to images
+/// Returns a Vec of ImageTransforms, one for each image draw command found
+/// Captures the state at the moment of each Do command
+fn parse_content_stream_for_all_ctms(content: &str) -> Vec<ImageTransform> {
+    // Track graphics state stack for cumulative CTM and clip rect
     let mut ctm_stack: Vec<[f64; 6]> = vec![[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]]; // Identity matrix
+    let mut clip_stack: Vec<Option<(f64, f64, f64, f64)>> = vec![None];
     let mut current_ctm = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-    // Capture the CTM at the moment of Do, not after Q restores it
-    let mut captured_ctm: Option<[f64; 6]> = None;
-    let mut found_image_name: Option<String> = None;
+    let mut current_clip: Option<(f64, f64, f64, f64)> = None;
+    // Pending rectangle from 're' command, waiting for 'W' to make it a clip
+    let mut pending_rect: Option<(f64, f64, f64, f64)> = None;
+
+    let mut transforms = Vec::new();
 
     // Tokenize the content stream
     let tokens: Vec<&str> = content.split_whitespace().collect();
@@ -917,13 +1103,17 @@ fn parse_content_stream_for_ctm(content: &str, xobject_name: &str) -> Option<Ima
 
         match token {
             "q" => {
-                // Save graphics state
+                // Save graphics state (including clip)
                 ctm_stack.push(current_ctm);
+                clip_stack.push(current_clip);
             }
             "Q" => {
                 // Restore graphics state
-                if let Some(saved) = ctm_stack.pop() {
-                    current_ctm = saved;
+                if let Some(saved_ctm) = ctm_stack.pop() {
+                    current_ctm = saved_ctm;
+                }
+                if let Some(saved_clip) = clip_stack.pop() {
+                    current_clip = saved_clip;
                 }
             }
             "cm" => {
@@ -942,21 +1132,78 @@ fn parse_content_stream_for_ctm(content: &str, xobject_name: &str) -> Option<Ima
                     current_ctm = multiply_matrices(&current_ctm, &new_matrix);
                 }
             }
+            "re" => {
+                // Rectangle path: x y width height re
+                // Store as pending until we see if it becomes a clip
+                if i >= 4
+                    && let (Ok(x), Ok(y), Ok(w), Ok(h)) = (
+                        tokens[i - 4].parse::<f64>(),
+                        tokens[i - 3].parse::<f64>(),
+                        tokens[i - 2].parse::<f64>(),
+                        tokens[i - 1].parse::<f64>(),
+                    )
+                {
+                    // Convert to (x1, y1, x2, y2) format
+                    pending_rect = Some((x, y, x + w, y + h));
+                }
+            }
+            "W" | "W*" => {
+                // Set clipping path - the pending rect becomes the clip
+                // W = non-zero winding rule, W* = even-odd rule (both set clip)
+                if let Some(rect) = pending_rect {
+                    // Intersect with current clip if one exists
+                    current_clip = Some(if let Some(existing) = current_clip {
+                        // Intersect rectangles
+                        (
+                            rect.0.max(existing.0), // x1
+                            rect.1.max(existing.1), // y1
+                            rect.2.min(existing.2), // x2
+                            rect.3.min(existing.3), // y2
+                        )
+                    } else {
+                        rect
+                    });
+                }
+                pending_rect = None;
+            }
+            "n" | "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" => {
+                // Path-ending operators - clear pending rect if not used as clip
+                pending_rect = None;
+            }
             "Do" => {
-                // Draw XObject - capture the CTM at this moment
+                // Draw XObject - capture the state at this moment for each image
                 // Only capture for Image XObjects (typically /ImN), not Form XObjects (/FmN)
                 if i >= 1 {
                     let name = tokens[i - 1].trim_start_matches('/');
                     // Image XObjects are typically named ImN, Img, Image, etc.
-                    // Form XObjects are typically named FmN, Form, etc.
-                    // We want to capture CTMs only for actual image draws
+                    // Also match X followed by digits (like X78)
                     if name.starts_with("Im")
                         || name.starts_with("Img")
                         || name.starts_with("Image")
+                        || (name.starts_with('X')
+                            && name.len() > 1
+                            && name[1..]
+                                .chars()
+                                .next()
+                                .map(|c| c.is_ascii_digit())
+                                .unwrap_or(false))
                     {
-                        found_image_name = Some(name.to_string());
-                        // Capture the CTM at the moment of drawing, before any Q restores it
-                        captured_ctm = Some(current_ctm);
+                        let [a, b, c, d, _e, _f] = current_ctm;
+                        let expected_width = (a * a + b * b).sqrt();
+                        let expected_height = (c * c + d * d).sqrt();
+                        let computed_bounds = Some(compute_bounds_from_ctm(&current_ctm));
+
+                        transforms.push(ImageTransform {
+                            xobject_name: name.to_string(),
+                            matrix: current_ctm,
+                            expected_width,
+                            expected_height,
+                            computed_bounds,
+                            clip_rect: current_clip,
+                            smask_data: None,
+                            smask_width: None,
+                            smask_height: None,
+                        });
                     }
                 }
             }
@@ -965,32 +1212,7 @@ fn parse_content_stream_for_ctm(content: &str, xobject_name: &str) -> Option<Ima
         i += 1;
     }
 
-    // Return the CTM that was in effect when Do was called
-    if found_image_name.is_some()
-        && let Some(ctm) = captured_ctm
-    {
-        let [a, b, c, d, _e, _f] = ctm;
-        // Calculate expected dimensions from CTM
-        // The CTM transforms unit vectors, so:
-        // - width = length of transformed (1,0) = sqrt(a² + b²)
-        // - height = length of transformed (0,1) = sqrt(c² + d²)
-        let expected_width = (a * a + b * b).sqrt();
-        let expected_height = (c * c + d * d).sqrt();
-
-        // Compute the axis-aligned bounding box from the CTM
-        // This gives us the TRUE position on the page after transformation
-        let computed_bounds = Some(compute_bounds_from_ctm(&ctm));
-
-        Some(ImageTransform {
-            xobject_name: xobject_name.trim_start_matches('/').to_string(),
-            matrix: ctm,
-            expected_width,
-            expected_height,
-            computed_bounds,
-        })
-    } else {
-        None
-    }
+    transforms
 }
 
 /// Multiply two 2D transformation matrices
@@ -1103,7 +1325,7 @@ fn find_matching_transform(
 
             // If positions don't match by any criterion, skip this CTM
             if !position_matches && !x1_very_close {
-                debug!(
+                trace!(
                     page = page_num + 1,
                     image_dims = format!("{:.1} x {:.1}", image_width, image_height),
                     poppler_bbox = format!(
@@ -1119,7 +1341,7 @@ fn find_matching_transform(
                 continue;
             }
 
-            info!(
+            trace!(
                 page = page_num + 1,
                 image_dims = format!("{:.1} x {:.1}", image_width, image_height),
                 ctm_dims = format!("{:.1} x {:.1}", transform.expected_width, transform.expected_height),
@@ -1131,7 +1353,7 @@ fn find_matching_transform(
             return Some(transform.clone());
         } else {
             // No computed bounds - fall back to dimension-only matching
-            info!(
+            trace!(
                 page = page_num + 1,
                 image_dims = format!("{:.1} x {:.1}", image_width, image_height),
                 ctm_dims = format!("{:.1} x {:.1}", transform.expected_width, transform.expected_height),
@@ -1142,7 +1364,7 @@ fn find_matching_transform(
         }
     }
 
-    debug!(
+    trace!(
         page = page_num + 1,
         image_dims = format!("{:.1} x {:.1}", image_width, image_height),
         available_ctms = page_transforms.len(),
@@ -1202,7 +1424,7 @@ fn apply_transform(image: &RgbaImage, matrix: &[f64; 6]) -> RgbaImage {
     // Calculate rotation angle
     let rotation_deg = f64::atan2(b_norm, a_norm).to_degrees();
 
-    info!(
+    trace!(
         a_norm = a_norm,
         b_norm = b_norm,
         c_norm = c_norm,
@@ -1657,8 +1879,15 @@ impl IngestionService {
 
                 // If we found a transform with computed_bounds (rotation), use those bounds
                 // for overlap detection instead of poppler's potentially incorrect bounds
-                let (final_area, transform_matrix) = if let Some(ref t) = matched_transform {
-                    info!(
+                let (
+                    final_area,
+                    transform_matrix,
+                    crop_pixels,
+                    smask_data,
+                    smask_width,
+                    smask_height,
+                ) = if let Some(ref t) = matched_transform {
+                    trace!(
                         page = page_num + 1,
                         image_id = image_id,
                         poppler_bounds = format!("{:.1} x {:.1}", bounds_width, bounds_height),
@@ -1669,24 +1898,104 @@ impl IngestionService {
 
                     // Use computed_bounds for overlap detection if available
                     // This fixes rotated images whose poppler bounding box is incorrect
-                    if let Some((x1, y1, x2, y2)) = t.computed_bounds {
-                        let corrected_area = Rectangle { x1, y1, x2, y2 };
-                        info!(
+                    let base_area = if let Some((x1, y1, x2, y2)) = t.computed_bounds {
+                        Rectangle { x1, y1, x2, y2 }
+                    } else {
+                        area
+                    };
+
+                    // Apply clip_rect if present - the visible area is the intersection
+                    // of the image bounds and the clipping rectangle
+                    let (final_clipped_area, crop) = if let Some((cx1, cy1, cx2, cy2)) = t.clip_rect
+                    {
+                        let clipped = Rectangle {
+                            x1: base_area.x1.max(cx1),
+                            y1: base_area.y1.max(cy1),
+                            x2: base_area.x2.min(cx2),
+                            y2: base_area.y2.min(cy2),
+                        };
+
+                        // Compute which pixels of the image correspond to the clipped region
+                        // The base_area defines the full image bounds in PDF points
+                        // Map the clipped region back to pixel coordinates
+                        let base_width = base_area.width();
+                        let base_height = base_area.height();
+
+                        let crop_pixels = if base_width > 0.0 && base_height > 0.0 {
+                            let px_per_pt_x = width as f64 / base_width;
+                            let px_per_pt_y = height as f64 / base_height;
+
+                            let crop_x =
+                                ((clipped.x1 - base_area.x1) * px_per_pt_x).max(0.0) as u32;
+                            let crop_y =
+                                ((clipped.y1 - base_area.y1) * px_per_pt_y).max(0.0) as u32;
+                            let crop_w = (clipped.width() * px_per_pt_x).max(1.0) as u32;
+                            let crop_h = (clipped.height() * px_per_pt_y).max(1.0) as u32;
+
+                            // Clamp to image bounds
+                            let crop_w = crop_w.min(width as u32 - crop_x);
+                            let crop_h = crop_h.min(height as u32 - crop_y);
+
+                            trace!(
+                                page = page_num + 1,
+                                image_id = image_id,
+                                crop_region =
+                                    format!("({}, {}) {}x{}", crop_x, crop_y, crop_w, crop_h),
+                                image_size = format!("{}x{}", width, height),
+                                "Computed pixel crop region from clip_rect"
+                            );
+
+                            Some((crop_x, crop_y, crop_w, crop_h))
+                        } else {
+                            None
+                        };
+
+                        trace!(
                             page = page_num + 1,
                             image_id = image_id,
                             original_area = format!(
                                 "({:.1},{:.1})-({:.1},{:.1})",
                                 area.x1, area.y1, area.x2, area.y2
                             ),
-                            corrected_area = format!("({:.1},{:.1})-({:.1},{:.1})", x1, y1, x2, y2),
-                            "Using CTM-computed bounds for overlap detection"
+                            computed_bounds = format!(
+                                "({:.1},{:.1})-({:.1},{:.1})",
+                                base_area.x1, base_area.y1, base_area.x2, base_area.y2
+                            ),
+                            clip_rect = format!("({:.1},{:.1})-({:.1},{:.1})", cx1, cy1, cx2, cy2),
+                            clipped_area = format!(
+                                "({:.1},{:.1})-({:.1},{:.1})",
+                                clipped.x1, clipped.y1, clipped.x2, clipped.y2
+                            ),
+                            "Applied clip rect to image bounds"
                         );
-                        (corrected_area, Some(t.matrix))
+                        (clipped, crop_pixels)
                     } else {
-                        (area, Some(t.matrix))
-                    }
+                        trace!(
+                            page = page_num + 1,
+                            image_id = image_id,
+                            original_area = format!(
+                                "({:.1},{:.1})-({:.1},{:.1})",
+                                area.x1, area.y1, area.x2, area.y2
+                            ),
+                            corrected_area = format!(
+                                "({:.1},{:.1})-({:.1},{:.1})",
+                                base_area.x1, base_area.y1, base_area.x2, base_area.y2
+                            ),
+                            "Using CTM-computed bounds for overlap detection (no clip)"
+                        );
+                        (base_area, None)
+                    };
+
+                    (
+                        final_clipped_area,
+                        Some(t.matrix),
+                        crop,
+                        t.smask_data.clone(),
+                        t.smask_width,
+                        t.smask_height,
+                    )
                 } else {
-                    (area, None)
+                    (area, None, None, None, None, None)
                 };
 
                 page_images.push(ImageInfo {
@@ -1704,6 +2013,10 @@ impl IngestionService {
                     page_width,
                     page_height,
                     transform: transform_matrix,
+                    crop_pixels,
+                    smask_data,
+                    smask_width,
+                    smask_height,
                 });
             }
 
@@ -1722,7 +2035,7 @@ impl IngestionService {
         }
 
         // Now group images considering cross-page overlaps
-        info!(
+        debug!(
             document_id = document_id,
             total_images = all_page_images.len(),
             "Building cross-page image groups"
@@ -1730,7 +2043,7 @@ impl IngestionService {
 
         let groups = build_cross_page_groups(&all_page_images);
 
-        info!(
+        debug!(
             document_id = document_id,
             groups = groups.len(),
             "Built image groups (including cross-page)"
