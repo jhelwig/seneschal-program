@@ -733,14 +733,14 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
                 name: "fvtt_read".to_string(),
-                description: "Read a Foundry VTT document (Actor, Item, etc.). Respects user permissions.".to_string(),
+                description: "Read a Foundry VTT document. Document types: actor (characters, NPCs, creatures), item (weapons, armor, equipment), journal_entry (notes, handouts), scene (maps/battlemaps where tokens are placed), rollable_table (random tables).".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "document_type": {
                             "type": "string",
                             "enum": ["actor", "item", "journal_entry", "scene", "rollable_table"],
-                            "description": "The type of FVTT document"
+                            "description": "actor=characters/NPCs, item=equipment, journal_entry=notes, scene=map/battlemap, rollable_table=random table"
                         },
                         "document_id": {
                             "type": "string",
@@ -755,14 +755,14 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
                 name: "fvtt_write".to_string(),
-                description: "Create or modify a Foundry VTT document. Respects user permissions.".to_string(),
+                description: "Create or modify a Foundry VTT document. Document types: actor (characters, NPCs, creatures), item (weapons, armor, equipment), journal_entry (notes, handouts), scene (maps/battlemaps - use with image_deliver to create maps from PDF images), rollable_table (random tables).".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "document_type": {
                             "type": "string",
                             "enum": ["actor", "item", "journal_entry", "scene", "rollable_table"],
-                            "description": "The type of FVTT document"
+                            "description": "actor=characters/NPCs, item=equipment, journal_entry=notes, scene=map/battlemap, rollable_table=random table"
                         },
                         "operation": {
                             "type": "string",
@@ -771,7 +771,7 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                         },
                         "data": {
                             "type": "object",
-                            "description": "The document data"
+                            "description": "The document data. For scenes: {name, background: {src: 'path/to/image.webp'}, width, height, grid: {size, type}}"
                         }
                     },
                     "required": ["document_type", "operation", "data"]
@@ -782,14 +782,14 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
                 name: "fvtt_query".to_string(),
-                description: "Query Foundry VTT documents with filters.".to_string(),
+                description: "Query Foundry VTT documents with filters. Document types: actor (characters, NPCs), item (equipment), journal_entry (notes), scene (maps/battlemaps), rollable_table (random tables).".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "document_type": {
                             "type": "string",
                             "enum": ["actor", "item", "journal_entry", "scene", "rollable_table"],
-                            "description": "The type of FVTT document to query"
+                            "description": "actor=characters/NPCs, item=equipment, journal_entry=notes, scene=map/battlemap, rollable_table=random table"
                         },
                         "filters": {
                             "type": "object",
