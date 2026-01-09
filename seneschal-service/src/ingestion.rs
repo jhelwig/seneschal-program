@@ -47,7 +47,6 @@ struct ImageInfo {
     height: i32,
     stride: i32,
     has_alpha: bool,
-    is_grayscale: bool,
     /// Scale factor from PDF points to pixels (width)
     scale_x: f64,
     /// Scale factor from PDF points to pixels (height)
@@ -394,25 +393,52 @@ fn calculate_centroid_page(all_images: &[ImageInfo], indices: &[usize]) -> usize
     ref_page + page_offset
 }
 
+/// Check if image data represents a grayscale image (R=G=B for all pixels)
+/// This detects SMask images that Poppler has converted to RGB format
+/// Returns true if the image appears to be grayscale data
+fn is_grayscale_rgb_data(surface_data: &[u8], width: i32, height: i32, stride: i32) -> bool {
+    // Sample pixels to check if R=G=B
+    // We don't need to check every pixel - sampling is sufficient
+    let sample_step = ((width * height) as usize / 100).max(1); // Check ~100 pixels
+    // Both ARGB32 and RGB24 use 4 bytes per pixel in Cairo
+    let bytes_per_pixel = 4;
+
+    let mut samples_checked = 0;
+    let mut grayscale_count = 0;
+
+    for y in (0..height).step_by(sample_step.max(1)) {
+        for x in (0..width).step_by(sample_step.max(1)) {
+            let offset = (y * stride + x * bytes_per_pixel) as usize;
+            if offset + 3 >= surface_data.len() {
+                continue;
+            }
+
+            // Cairo format: BGRA on little-endian
+            let b = surface_data[offset];
+            let g = surface_data[offset + 1];
+            let r = surface_data[offset + 2];
+
+            samples_checked += 1;
+
+            // Check if R=G=B (within small tolerance for compression artifacts)
+            let max_diff = r.abs_diff(g).max(g.abs_diff(b)).max(r.abs_diff(b));
+            if max_diff <= 2 {
+                grayscale_count += 1;
+            }
+        }
+    }
+
+    // If >95% of sampled pixels are grayscale, consider the whole image grayscale
+    samples_checked > 0 && (grayscale_count as f64 / samples_checked as f64) > 0.95
+}
+
 /// Convert an ImageInfo to an RGBA image
 fn convert_to_rgba(info: &ImageInfo) -> RgbaImage {
     let width = info.width as u32;
     let height = info.height as u32;
     let mut img = RgbaImage::new(width, height);
 
-    if info.is_grayscale {
-        // Grayscale A8 format -> RGBA (gray, gray, gray, 255)
-        // Cairo A8 stores alpha values, but for grayscale images we treat them as gray values
-        for y in 0..height {
-            for x in 0..width {
-                let offset = (y as i32 * info.stride + x as i32) as usize;
-                if offset < info.surface_data.len() {
-                    let gray = info.surface_data[offset];
-                    img.put_pixel(x, y, image::Rgba([gray, gray, gray, 255]));
-                }
-            }
-        }
-    } else if info.has_alpha {
+    if info.has_alpha {
         // ARGB32 (Cairo premultiplied format) -> RGBA
         // Cairo ARGB32 is stored as 32-bit native-endian with alpha in highest byte
         // On little-endian systems: BGRA byte order
@@ -1819,11 +1845,21 @@ impl IngestionService {
                 // Determine image type from format
                 // CAIRO_FORMAT_ARGB32 = 0
                 // CAIRO_FORMAT_RGB24 = 1
-                // CAIRO_FORMAT_A8 = 2
-                let (has_alpha, is_grayscale) = match format {
-                    0 => (true, false),  // ARGB32
-                    1 => (false, false), // RGB24
-                    2 => (false, true),  // A8 (grayscale)
+                // CAIRO_FORMAT_A8 = 2 (grayscale/alpha-only - typically SMask data)
+                let has_alpha = match format {
+                    0 => true,  // ARGB32 - color with alpha
+                    1 => false, // RGB24 - color, no alpha
+                    2 => {
+                        // A8 format is alpha-only data, typically used for SMask
+                        // These are not standalone images - they provide transparency
+                        // for other images and should be applied via SMask extraction
+                        trace!(
+                            page = page_num + 1,
+                            image_id = image_id,
+                            "Skipping A8 format image (probable SMask)"
+                        );
+                        continue;
+                    }
                     _ => {
                         debug!(
                             page = page_num + 1,
@@ -1853,6 +1889,19 @@ impl IngestionService {
                 let data_len = (stride * height) as usize;
                 let surface_data =
                     unsafe { std::slice::from_raw_parts(data_ptr, data_len).to_vec() };
+
+                // Skip grayscale images - these are typically SMask data that Poppler
+                // has converted to RGB format. They should not be extracted as standalone
+                // images; they're meant to provide transparency for other images.
+                if is_grayscale_rgb_data(&surface_data, width, height, stride) {
+                    trace!(
+                        page = page_num + 1,
+                        image_id = image_id,
+                        size = format!("{}x{}", width, height),
+                        "Skipping grayscale image (probable SMask converted to RGB)"
+                    );
+                    continue;
+                }
 
                 // Calculate scale factors from PDF points to pixels
                 let bounds_width = area.width();
@@ -2006,7 +2055,6 @@ impl IngestionService {
                     height,
                     stride,
                     has_alpha,
-                    is_grayscale,
                     scale_x,
                     scale_y,
                     page_number: page_num as usize,
