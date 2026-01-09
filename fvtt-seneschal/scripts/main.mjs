@@ -1500,8 +1500,81 @@ class DocumentManagementDialog extends Application {
     doc.chunk_count = update.chunk_count;
     doc.image_count = update.image_count;
 
-    // Re-render without reloading data
-    this.render(false);
+    // Update only the specific document row in the DOM (preserves form inputs)
+    this._updateDocumentRowDOM(doc);
+  }
+
+  /**
+   * Update the DOM for a specific document row without re-rendering the entire template.
+   * This preserves form inputs while updating document status.
+   * @param {Object} doc - The document object with updated properties
+   * @private
+   */
+  _updateDocumentRowDOM(doc) {
+    const row = this.element.find(`tr[data-document-id="${doc.id}"]`);
+    if (!row.length) {
+      // Row not found in DOM, fall back to full re-render
+      this.render(false);
+      return;
+    }
+
+    // Update row classes for processing/failed state
+    row.removeClass("processing failed");
+    if (doc.processing_status === "processing") {
+      row.addClass("processing");
+    } else if (doc.processing_status === "failed") {
+      row.addClass("failed");
+    }
+
+    // Build status HTML based on processing state
+    let statusHtml;
+    if (doc.processing_status === "processing") {
+      let phaseText;
+      if (doc.processing_phase === "queued") {
+        phaseText = game.i18n.localize("SENESCHAL.Documents.PhaseQueued");
+      } else if (doc.processing_phase === "chunking") {
+        phaseText = game.i18n.localize("SENESCHAL.Documents.PhaseChunking");
+      } else if (doc.processing_phase === "embedding") {
+        phaseText = `${game.i18n.localize("SENESCHAL.Documents.PhaseEmbedding")} (${doc.processing_progress}/${doc.processing_total})`;
+      } else if (doc.processing_phase === "extracting_images") {
+        phaseText = game.i18n.localize("SENESCHAL.Documents.PhaseExtractingImages");
+      } else if (doc.processing_phase === "captioning") {
+        phaseText = `${game.i18n.localize("SENESCHAL.Documents.PhaseCaptioning")} (${doc.processing_progress}/${doc.processing_total})`;
+      } else if (doc.processing_phase) {
+        phaseText = doc.processing_phase;
+      } else {
+        phaseText = game.i18n.localize("SENESCHAL.Documents.StatusProcessing");
+      }
+      statusHtml = `<i class="fas fa-spinner fa-spin"></i> ${phaseText}`;
+    } else if (doc.processing_status === "failed") {
+      statusHtml = `<i class="fas fa-times-circle"></i> ${game.i18n.localize("SENESCHAL.Documents.StatusFailed")}`;
+    } else {
+      statusHtml = `<i class="fas fa-check-circle"></i> ${game.i18n.localize("SENESCHAL.Documents.StatusCompleted")}`;
+    }
+    row.find(".document-status").html(statusHtml);
+
+    // Update chunk count
+    row.find(".document-chunks").text(doc.chunk_count ?? "");
+
+    // Update image count (unless we're showing a reprocessing spinner)
+    const imagesCell = row.find(".document-images");
+    if (!imagesCell.find(".fa-spinner").length || this.processingDoc !== doc.id) {
+      imagesCell.text(doc.image_count ?? "");
+    }
+
+    // Update error display in title cell
+    const titleCell = row.find(".document-title");
+    titleCell.find(".document-error").remove();
+    if (doc.processing_error) {
+      const escapedError = doc.processing_error
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+      titleCell.append(
+        `<div class="document-error" title="${escapedError}"><i class="fas fa-exclamation-circle"></i></div>`
+      );
+    }
   }
 
   /**
