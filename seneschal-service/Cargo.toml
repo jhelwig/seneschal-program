@@ -33,6 +33,9 @@ rusqlite = { workspace = true }
 # Streaming support
 tokio-stream = { workspace = true }
 
+# WebSocket support
+tokio-tungstenite = { workspace = true }
+
 # PDF processing
 pdfium-render = { workspace = true }
 image = { workspace = true }

@@ -21,6 +21,7 @@ use crate::tools::{
     AccessLevel, SearchFilters, TagMatch, ToolCall, ToolLocation, ToolResult, TravellerTool,
     classify_tool,
 };
+use crate::websocket::{DocumentProgressUpdate, WebSocketManager};
 
 /// Main service coordinator
 pub struct SeneschalService {
@@ -31,6 +32,7 @@ pub struct SeneschalService {
     pub ingestion: Arc<IngestionService>,
     pub i18n: Arc<I18n>,
     pub active_requests: Arc<DashMap<String, ActiveRequest>>,
+    pub ws_manager: Arc<WebSocketManager>,
 }
 
 impl SeneschalService {
@@ -72,6 +74,9 @@ impl SeneschalService {
         // Initialize i18n
         let i18n = Arc::new(I18n::new());
 
+        // Initialize WebSocket manager
+        let ws_manager = Arc::new(WebSocketManager::new());
+
         Ok(Self {
             config,
             db,
@@ -80,6 +85,7 @@ impl SeneschalService {
             ingestion,
             i18n,
             active_requests: Arc::new(DashMap::new()),
+            ws_manager,
         })
     }
 
@@ -886,6 +892,32 @@ When asked about rules or game content, use document_search to find relevant inf
         });
     }
 
+    /// Broadcast document processing progress via WebSocket
+    #[allow(clippy::too_many_arguments)]
+    fn broadcast_document_progress(
+        &self,
+        document_id: &str,
+        status: &str,
+        phase: Option<&str>,
+        progress: Option<usize>,
+        total: Option<usize>,
+        error: Option<&str>,
+        chunk_count: usize,
+        image_count: usize,
+    ) {
+        self.ws_manager
+            .broadcast_document_update(DocumentProgressUpdate {
+                document_id: document_id.to_string(),
+                status: status.to_string(),
+                phase: phase.map(String::from),
+                progress,
+                total,
+                error: error.map(String::from),
+                chunk_count,
+                image_count,
+            });
+    }
+
     /// Process a single document (called by the worker)
     /// This method is resumable - it checks what's already been done and continues from there.
     async fn process_document(&self, document: &Document) {
@@ -900,6 +932,16 @@ When asked about rules or game content, use document_search to find relevant inf
                     doc_id,
                     ProcessingStatus::Failed,
                     Some("Document has no file path"),
+                );
+                self.broadcast_document_progress(
+                    doc_id,
+                    "failed",
+                    None,
+                    None,
+                    None,
+                    Some("Document has no file path"),
+                    0,
+                    0,
                 );
                 return;
             }
@@ -926,6 +968,16 @@ When asked about rules or game content, use document_search to find relevant inf
         if existing_chunk_count == 0 {
             info!(doc_id = %doc_id, "Extracting text and creating chunks");
             let _ = self.db.update_document_progress(doc_id, "chunking", 0, 1);
+            self.broadcast_document_progress(
+                doc_id,
+                "processing",
+                Some("chunking"),
+                Some(0),
+                Some(1),
+                None,
+                0,
+                0,
+            );
 
             let chunks = match self.ingestion.process_document_with_id(
                 &file_path,
@@ -941,6 +993,16 @@ When asked about rules or game content, use document_search to find relevant inf
                         doc_id,
                         ProcessingStatus::Failed,
                         Some(&e.to_string()),
+                    );
+                    self.broadcast_document_progress(
+                        doc_id,
+                        "failed",
+                        None,
+                        None,
+                        None,
+                        Some(&e.to_string()),
+                        0,
+                        0,
                     );
                     return;
                 }
@@ -963,10 +1025,21 @@ When asked about rules or game content, use document_search to find relevant inf
             Ok(chunks) => chunks,
             Err(e) => {
                 error!(doc_id = %doc_id, error = %e, "Failed to get chunks without embeddings");
+                let error_msg = format!("Failed to query chunks: {}", e);
                 let _ = self.db.update_document_processing_status(
                     doc_id,
                     ProcessingStatus::Failed,
-                    Some(&format!("Failed to query chunks: {}", e)),
+                    Some(&error_msg),
+                );
+                self.broadcast_document_progress(
+                    doc_id,
+                    "failed",
+                    None,
+                    None,
+                    None,
+                    Some(&error_msg),
+                    0,
+                    0,
                 );
                 return;
             }
@@ -988,13 +1061,34 @@ When asked about rules or game content, use document_search to find relevant inf
                 already_embedded,
                 total_chunks,
             );
+            self.broadcast_document_progress(
+                doc_id,
+                "processing",
+                Some("embedding"),
+                Some(already_embedded),
+                Some(total_chunks),
+                None,
+                0,
+                0,
+            );
 
             if let Err(e) = self.search.index_chunks(&chunks_to_embed).await {
                 error!(doc_id = %doc_id, error = %e, "Failed to index chunks");
+                let error_msg = format!("Embedding generation failed: {}", e);
                 let _ = self.db.update_document_processing_status(
                     doc_id,
                     ProcessingStatus::Failed,
-                    Some(&format!("Embedding generation failed: {}", e)),
+                    Some(&error_msg),
+                );
+                self.broadcast_document_progress(
+                    doc_id,
+                    "failed",
+                    None,
+                    None,
+                    None,
+                    Some(&error_msg),
+                    0,
+                    0,
                 );
                 return;
             }
@@ -1019,6 +1113,16 @@ When asked about rules or game content, use document_search to find relevant inf
                 let _ = self
                     .db
                     .update_document_progress(doc_id, "extracting_images", 0, 1);
+                self.broadcast_document_progress(
+                    doc_id,
+                    "processing",
+                    Some("extracting_images"),
+                    Some(0),
+                    Some(1),
+                    None,
+                    0,
+                    0,
+                );
                 match self.ingestion.extract_pdf_images(&file_path, doc_id) {
                     Ok(images) => {
                         image_count = images.len();
@@ -1099,6 +1203,16 @@ When asked about rules or game content, use document_search to find relevant inf
                             "captioning",
                             current_progress,
                             total_images,
+                        );
+                        self.broadcast_document_progress(
+                            doc_id,
+                            "processing",
+                            Some("captioning"),
+                            Some(current_progress),
+                            Some(total_images),
+                            None,
+                            0,
+                            image_count,
                         );
                         info!(
                             doc_id = %doc_id,
@@ -1204,6 +1318,18 @@ When asked about rules or game content, use document_search to find relevant inf
         let _ =
             self.db
                 .update_document_processing_status(doc_id, ProcessingStatus::Completed, None);
+
+        // Broadcast completion
+        self.broadcast_document_progress(
+            doc_id,
+            "completed",
+            None,
+            None,
+            None,
+            None,
+            total_chunks,
+            total_images,
+        );
 
         info!(
             doc_id = %doc_id,
@@ -1451,6 +1577,7 @@ When asked about rules or game content, use document_search to find relevant inf
             ingestion: self.ingestion.clone(),
             i18n: self.i18n.clone(),
             active_requests: self.active_requests.clone(),
+            ws_manager: self.ws_manager.clone(),
         }
     }
 }

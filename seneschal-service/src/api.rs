@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, State, WebSocketUpgrade},
     http::{StatusCode, header},
     response::{IntoResponse, Response, Sse, sse::Event},
     routing::{delete, get, post},
@@ -21,11 +21,13 @@ use crate::error::{I18nError, ServiceError};
 use crate::ingestion::IngestionService;
 use crate::service::{ChatApiRequest, SSEEvent, SeneschalService};
 use crate::tools::{AccessLevel, SearchFilters, TagMatch};
+use crate::websocket::{WebSocketManager, handle_ws_connection};
 
 /// Application state
 pub struct AppState {
     pub service: Arc<SeneschalService>,
     pub start_time: Instant,
+    pub ws_manager: Arc<WebSocketManager>,
 }
 
 impl AppState {
@@ -37,9 +39,12 @@ impl AppState {
 
 /// Build the API router
 pub fn router(service: Arc<SeneschalService>, config: &AppConfig) -> Router {
+    let ws_manager = service.ws_manager.clone();
+
     let state = Arc::new(AppState {
         service,
         start_time: Instant::now(),
+        ws_manager,
     });
 
     let cors = CorsLayer::new()
@@ -90,6 +95,7 @@ pub fn router(service: Arc<SeneschalService>, config: &AppConfig) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
+        .route("/ws", get(ws_handler))
         .nest("/api", api_routes)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
@@ -149,6 +155,13 @@ seneschal_documents_total 0
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
         metrics,
     )
+}
+
+// === WebSocket ===
+
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    info!("WebSocket upgrade request received");
+    ws.on_upgrade(move |socket| handle_ws_connection(socket, state.ws_manager.clone()))
 }
 
 // === Chat ===

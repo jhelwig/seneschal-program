@@ -813,7 +813,11 @@ fn extract_image_transforms_with_qpdf(
 
         // Get all XObject names
         let xobject_keys = xobjects_dict.keys();
-        trace!(page = page_idx + 1, xobjects = xobject_keys.len(), "Found XObjects on page");
+        trace!(
+            page = page_idx + 1,
+            xobjects = xobject_keys.len(),
+            "Found XObjects on page"
+        );
 
         // For each Form XObject, extract CTM from its content stream
         for key in xobject_keys {
@@ -946,7 +950,10 @@ fn parse_content_stream_for_ctm(content: &str, xobject_name: &str) -> Option<Ima
                     // Image XObjects are typically named ImN, Img, Image, etc.
                     // Form XObjects are typically named FmN, Form, etc.
                     // We want to capture CTMs only for actual image draws
-                    if name.starts_with("Im") || name.starts_with("Img") || name.starts_with("Image") {
+                    if name.starts_with("Im")
+                        || name.starts_with("Img")
+                        || name.starts_with("Image")
+                    {
                         found_image_name = Some(name.to_string());
                         // Capture the CTM at the moment of drawing, before any Q restores it
                         captured_ctm = Some(current_ctm);
@@ -1066,7 +1073,8 @@ fn find_matching_transform(
                 && (ctm_cy - poppler_cy).abs() < position_tolerance;
 
             // Accept if centers are close OR if at least one x AND one y coordinate match
-            let position_matches = center_close || ((x1_close || x2_close) && (y1_close || y2_close));
+            let position_matches =
+                center_close || ((x1_close || x2_close) && (y1_close || y2_close));
 
             // For rotated images, poppler often gets x1 right but y completely wrong
             // Be more lenient: accept if x1 matches closely even if y is off
@@ -1075,9 +1083,18 @@ fn find_matching_transform(
             trace!(
                 page = page_num + 1,
                 image_dims = format!("{:.1} x {:.1}", image_width, image_height),
-                ctm_dims = format!("{:.1} x {:.1}", transform.expected_width, transform.expected_height),
-                poppler_bbox = format!("({:.1},{:.1})-({:.1},{:.1})", poppler_area.x1, poppler_area.y1, poppler_area.x2, poppler_area.y2),
-                ctm_bbox = format!("({:.1},{:.1})-({:.1},{:.1})", ctm_x1, ctm_y1, ctm_x2, ctm_y2),
+                ctm_dims = format!(
+                    "{:.1} x {:.1}",
+                    transform.expected_width, transform.expected_height
+                ),
+                poppler_bbox = format!(
+                    "({:.1},{:.1})-({:.1},{:.1})",
+                    poppler_area.x1, poppler_area.y1, poppler_area.x2, poppler_area.y2
+                ),
+                ctm_bbox = format!(
+                    "({:.1},{:.1})-({:.1},{:.1})",
+                    ctm_x1, ctm_y1, ctm_x2, ctm_y2
+                ),
                 x1_close = x1_close,
                 x1_very_close = x1_very_close,
                 center_close = center_close,
@@ -1089,8 +1106,14 @@ fn find_matching_transform(
                 debug!(
                     page = page_num + 1,
                     image_dims = format!("{:.1} x {:.1}", image_width, image_height),
-                    poppler_bbox = format!("({:.1},{:.1})-({:.1},{:.1})", poppler_area.x1, poppler_area.y1, poppler_area.x2, poppler_area.y2),
-                    ctm_bbox = format!("({:.1},{:.1})-({:.1},{:.1})", ctm_x1, ctm_y1, ctm_x2, ctm_y2),
+                    poppler_bbox = format!(
+                        "({:.1},{:.1})-({:.1},{:.1})",
+                        poppler_area.x1, poppler_area.y1, poppler_area.x2, poppler_area.y2
+                    ),
+                    ctm_bbox = format!(
+                        "({:.1},{:.1})-({:.1},{:.1})",
+                        ctm_x1, ctm_y1, ctm_x2, ctm_y2
+                    ),
                     "Dimensions match but no position criterion met - skipping CTM"
                 );
                 continue;
@@ -1651,7 +1674,10 @@ impl IngestionService {
                         info!(
                             page = page_num + 1,
                             image_id = image_id,
-                            original_area = format!("({:.1},{:.1})-({:.1},{:.1})", area.x1, area.y1, area.x2, area.y2),
+                            original_area = format!(
+                                "({:.1},{:.1})-({:.1},{:.1})",
+                                area.x1, area.y1, area.x2, area.y2
+                            ),
                             corrected_area = format!("({:.1},{:.1})-({:.1},{:.1})", x1, y1, x2, y2),
                             "Using CTM-computed bounds for overlap detection"
                         );

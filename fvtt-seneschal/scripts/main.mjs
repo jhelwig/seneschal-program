@@ -710,6 +710,261 @@ class BackendClient {
   }
 }
 
+// ============================================================================
+// WebSocket Client
+// ============================================================================
+
+/**
+ * WebSocket client for real-time updates from the backend
+ * Handles document processing status and other live updates
+ */
+class WebSocketClient {
+  constructor() {
+    this.socket = null;
+    this.sessionId = null;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 10;
+    this.reconnectDelay = 1000;
+    this.listeners = new Map(); // event type -> Set of callbacks
+    this.authenticated = false;
+    this.pingInterval = null;
+    this.connectionPromise = null;
+  }
+
+  /**
+   * Get the WebSocket URL from the backend URL
+   * @returns {string|null}
+   */
+  get wsUrl() {
+    const httpUrl = getSetting(SETTINGS.BACKEND_URL);
+    if (!httpUrl) return null;
+    return httpUrl.replace(/^http/, "ws") + "/ws";
+  }
+
+  /**
+   * Connect to the WebSocket server
+   * @returns {Promise<void>}
+   */
+  async connect() {
+    if (this.socket?.readyState === WebSocket.OPEN) return;
+    if (this.connectionPromise) return this.connectionPromise;
+
+    this.connectionPromise = new Promise((resolve, reject) => {
+      const wsUrl = this.wsUrl;
+      if (!wsUrl) {
+        reject(new Error("Backend URL not configured"));
+        this.connectionPromise = null;
+        return;
+      }
+
+      console.log(`${MODULE_ID} | Connecting to WebSocket at ${wsUrl}`);
+      this.socket = new WebSocket(wsUrl);
+
+      this.socket.onopen = () => {
+        console.log(`${MODULE_ID} | WebSocket connected`);
+        this.reconnectAttempts = 0;
+        this.reconnectDelay = 1000;
+        this._authenticate();
+        this.connectionPromise = null;
+        resolve();
+      };
+
+      this.socket.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          this._handleMessage(msg);
+        } catch (e) {
+          console.error(`${MODULE_ID} | Failed to parse WebSocket message:`, e);
+        }
+      };
+
+      this.socket.onclose = (event) => {
+        console.log(`${MODULE_ID} | WebSocket closed:`, event.code, event.reason);
+        this.authenticated = false;
+        this._clearPingInterval();
+        this.connectionPromise = null;
+        this._scheduleReconnect();
+      };
+
+      this.socket.onerror = (error) => {
+        console.error(`${MODULE_ID} | WebSocket error:`, error);
+        this.connectionPromise = null;
+        reject(error);
+      };
+    });
+
+    return this.connectionPromise;
+  }
+
+  /**
+   * Send authentication message with user context
+   * @private
+   */
+  _authenticate() {
+    const ctx = buildUserContext();
+    this.send({
+      type: "auth",
+      user_id: ctx.user_id,
+      user_name: ctx.user_name,
+      role: ctx.role,
+      session_id: this.sessionId,
+    });
+  }
+
+  /**
+   * Handle incoming WebSocket message
+   * @param {Object} msg - Parsed message
+   * @private
+   */
+  _handleMessage(msg) {
+    switch (msg.type) {
+      case "auth_response":
+        this.authenticated = msg.success;
+        this.sessionId = msg.session_id;
+        if (msg.success) {
+          this._startPingInterval();
+          this._emit("connected", {});
+          console.log(`${MODULE_ID} | WebSocket authenticated, session: ${msg.session_id}`);
+        } else {
+          console.error(`${MODULE_ID} | WebSocket authentication failed:`, msg.message);
+        }
+        break;
+      case "document_progress":
+        this._emit("document_progress", msg);
+        break;
+      case "pong":
+        // Keepalive acknowledged
+        break;
+      case "error":
+        console.error(`${MODULE_ID} | WebSocket server error:`, msg);
+        this._emit("error", msg);
+        break;
+      default:
+        console.warn(`${MODULE_ID} | Unknown WebSocket message type:`, msg.type);
+    }
+  }
+
+  /**
+   * Send a message to the server
+   * @param {Object} msg - Message to send
+   */
+  send(msg) {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(msg));
+    }
+  }
+
+  /**
+   * Subscribe to document processing updates
+   */
+  subscribeToDocuments() {
+    this.send({ type: "subscribe_documents" });
+  }
+
+  /**
+   * Unsubscribe from document processing updates
+   */
+  unsubscribeFromDocuments() {
+    this.send({ type: "unsubscribe_documents" });
+  }
+
+  /**
+   * Add an event listener
+   * @param {string} event - Event type
+   * @param {Function} callback - Callback function
+   * @returns {Function} Unsubscribe function
+   */
+  on(event, callback) {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event).add(callback);
+    return () => this.off(event, callback);
+  }
+
+  /**
+   * Remove an event listener
+   * @param {string} event - Event type
+   * @param {Function} callback - Callback function
+   */
+  off(event, callback) {
+    this.listeners.get(event)?.delete(callback);
+  }
+
+  /**
+   * Emit an event to all listeners
+   * @param {string} event - Event type
+   * @param {*} data - Event data
+   * @private
+   */
+  _emit(event, data) {
+    this.listeners.get(event)?.forEach((cb) => {
+      try {
+        cb(data);
+      } catch (e) {
+        console.error(`${MODULE_ID} | Error in WebSocket event handler:`, e);
+      }
+    });
+  }
+
+  /**
+   * Start the ping interval for keepalive
+   * @private
+   */
+  _startPingInterval() {
+    this._clearPingInterval();
+    this.pingInterval = setInterval(() => {
+      this.send({ type: "ping" });
+    }, 30000);
+  }
+
+  /**
+   * Clear the ping interval
+   * @private
+   */
+  _clearPingInterval() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
+  }
+
+  /**
+   * Schedule a reconnection attempt with exponential backoff
+   * @private
+   */
+  _scheduleReconnect() {
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.error(`${MODULE_ID} | Max WebSocket reconnection attempts reached`);
+      this._emit("disconnected", { permanent: true });
+      return;
+    }
+
+    this.reconnectAttempts++;
+    const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), 30000);
+
+    console.log(
+      `${MODULE_ID} | Scheduling WebSocket reconnect in ${delay}ms (attempt ${this.reconnectAttempts})`
+    );
+
+    setTimeout(() => {
+      this.connect().catch(() => {});
+    }, delay);
+  }
+
+  /**
+   * Close the WebSocket connection
+   */
+  close() {
+    this._clearPingInterval();
+    if (this.socket) {
+      this.socket.close(1000, "Client closing");
+      this.socket = null;
+    }
+    this.authenticated = false;
+  }
+}
+
 /**
  * Save an image to FVTT via shuttle mode (FilePicker.uploadPersistent)
  * Used when the backend cannot write directly to FVTT assets
@@ -1157,7 +1412,7 @@ class DocumentManagementDialog extends Application {
     this.error = null;
     this.uploadProgress = null;
     this.processingDoc = null; // Document ID currently being re-processed (images)
-    this._pollTimer = null; // Timer for auto-refresh when documents are processing
+    this._wsUnsubscribe = null; // WebSocket event unsubscribe function
     this._imageBrowserDialogs = new Map(); // Track open image browser dialogs
   }
 
@@ -1187,7 +1442,66 @@ class DocumentManagementDialog extends Application {
     await super._render(force, options);
     if (force) {
       this._loadDocuments();
+      this._subscribeToUpdates();
     }
+  }
+
+  /**
+   * Subscribe to WebSocket document updates
+   * @private
+   */
+  _subscribeToUpdates() {
+    // Unsubscribe from any previous subscription
+    if (this._wsUnsubscribe) {
+      this._wsUnsubscribe();
+      this._wsUnsubscribe = null;
+    }
+
+    // Check if WebSocket is available and authenticated
+    if (!globalThis.seneschalWS?.authenticated) {
+      console.log(
+        `${MODULE_ID} | WebSocket not available, document updates will require manual refresh`
+      );
+      return;
+    }
+
+    // Listen for document progress updates
+    this._wsUnsubscribe = globalThis.seneschalWS.on("document_progress", (update) => {
+      this._handleDocumentUpdate(update);
+    });
+
+    // Subscribe to documents channel
+    globalThis.seneschalWS.subscribeToDocuments();
+    console.log(`${MODULE_ID} | Subscribed to document updates via WebSocket`);
+  }
+
+  /**
+   * Handle document progress update from WebSocket
+   * @param {Object} update - Document progress update
+   * @private
+   */
+  _handleDocumentUpdate(update) {
+    const docIndex = this.documents.findIndex((d) => d.id === update.document_id);
+
+    if (docIndex === -1) {
+      // New document we don't know about - reload the list
+      console.log(`${MODULE_ID} | Unknown document ${update.document_id}, reloading list`);
+      this._loadDocuments();
+      return;
+    }
+
+    // Update document in place
+    const doc = this.documents[docIndex];
+    doc.processing_status = update.status;
+    doc.processing_phase = update.phase;
+    doc.processing_progress = update.progress;
+    doc.processing_total = update.total;
+    doc.processing_error = update.error;
+    doc.chunk_count = update.chunk_count;
+    doc.image_count = update.image_count;
+
+    // Re-render without reloading data
+    this.render(false);
   }
 
   /**
@@ -1230,9 +1544,6 @@ class DocumentManagementDialog extends Application {
       this.documents = await this.backendClient.listDocuments();
       this.isLoading = false;
       this.render(false);
-
-      // If any documents are still processing, start auto-refresh
-      this._startProcessingPoll();
     } catch (error) {
       console.error("Failed to load documents:", error);
       this.isLoading = false;
@@ -1242,39 +1553,16 @@ class DocumentManagementDialog extends Application {
   }
 
   /**
-   * Start polling for document processing status updates
-   */
-  _startProcessingPoll() {
-    // Clear any existing timer
-    if (this._pollTimer) {
-      clearTimeout(this._pollTimer);
-      this._pollTimer = null;
-    }
-
-    // Check if any documents are processing
-    const hasProcessing = this.documents.some((doc) => doc.processing_status === "processing");
-    if (!hasProcessing) return;
-
-    // Poll every 5 seconds
-    this._pollTimer = setTimeout(async () => {
-      try {
-        this.documents = await this.backendClient.listDocuments();
-        this.render(false);
-        this._startProcessingPoll(); // Continue polling if still processing
-      } catch (error) {
-        console.error("Failed to refresh documents:", error);
-      }
-    }, 5000);
-  }
-
-  /**
-   * Stop polling when dialog closes
+   * Cleanup when dialog closes
    */
   close(options) {
-    if (this._pollTimer) {
-      clearTimeout(this._pollTimer);
-      this._pollTimer = null;
+    // Unsubscribe from WebSocket updates
+    if (this._wsUnsubscribe) {
+      this._wsUnsubscribe();
+      this._wsUnsubscribe = null;
     }
+    globalThis.seneschalWS?.unsubscribeFromDocuments();
+
     return super.close(options);
   }
 
@@ -2222,13 +2510,26 @@ Hooks.once("init", () => {
   registerSettings();
 });
 
-Hooks.once("ready", () => {
+Hooks.once("ready", async () => {
   console.log(`${MODULE_ID} | Seneschal ready`);
 
   // Check if backend is configured
   const backendUrl = getSetting(SETTINGS.BACKEND_URL);
   if (!backendUrl && game.user.isGM) {
     ui.notifications.warn(game.i18n.localize("SENESCHAL.Notifications.NotConfigured"));
+    return;
+  }
+
+  // Initialize WebSocket client for real-time updates
+  if (backendUrl) {
+    globalThis.seneschalWS = new WebSocketClient();
+    try {
+      await globalThis.seneschalWS.connect();
+      console.log(`${MODULE_ID} | WebSocket connected successfully`);
+    } catch (error) {
+      console.error(`${MODULE_ID} | WebSocket connection failed:`, error);
+      // Will auto-reconnect in the background
+    }
   }
 });
 

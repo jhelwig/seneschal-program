@@ -14,6 +14,7 @@ mod ollama;
 mod search;
 mod service;
 mod tools;
+mod websocket;
 
 use crate::config::AppConfig;
 use crate::service::SeneschalService;
