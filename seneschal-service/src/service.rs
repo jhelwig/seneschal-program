@@ -893,7 +893,6 @@ When asked about rules or game content, use document_search to find relevant inf
     }
 
     /// Broadcast document processing progress via WebSocket
-    #[allow(clippy::too_many_arguments)]
     fn broadcast_document_progress(
         &self,
         document_id: &str,
@@ -902,9 +901,11 @@ When asked about rules or game content, use document_search to find relevant inf
         progress: Option<usize>,
         total: Option<usize>,
         error: Option<&str>,
-        chunk_count: usize,
-        image_count: usize,
     ) {
+        // Compute counts dynamically from the database
+        let chunk_count = self.db.get_chunk_count(document_id).unwrap_or(0);
+        let image_count = self.db.get_image_count(document_id).unwrap_or(0);
+
         self.ws_manager
             .broadcast_document_update(DocumentProgressUpdate {
                 document_id: document_id.to_string(),
@@ -940,8 +941,6 @@ When asked about rules or game content, use document_search to find relevant inf
                     None,
                     None,
                     Some("Document has no file path"),
-                    0,
-                    0,
                 );
                 return;
             }
@@ -975,8 +974,6 @@ When asked about rules or game content, use document_search to find relevant inf
                 Some(0),
                 Some(1),
                 None,
-                0,
-                0,
             );
 
             let chunks = match self.ingestion.process_document_with_id(
@@ -1001,8 +998,6 @@ When asked about rules or game content, use document_search to find relevant inf
                         None,
                         None,
                         Some(&e.to_string()),
-                        0,
-                        0,
                     );
                     return;
                 }
@@ -1038,8 +1033,6 @@ When asked about rules or game content, use document_search to find relevant inf
                     None,
                     None,
                     Some(&error_msg),
-                    0,
-                    0,
                 );
                 return;
             }
@@ -1068,8 +1061,6 @@ When asked about rules or game content, use document_search to find relevant inf
                 Some(already_embedded),
                 Some(total_chunks),
                 None,
-                0,
-                0,
             );
 
             if let Err(e) = self.search.index_chunks(&chunks_to_embed).await {
@@ -1087,8 +1078,6 @@ When asked about rules or game content, use document_search to find relevant inf
                     None,
                     None,
                     Some(&error_msg),
-                    0,
-                    0,
                 );
                 return;
             }
@@ -1120,8 +1109,6 @@ When asked about rules or game content, use document_search to find relevant inf
                     Some(0),
                     Some(1),
                     None,
-                    0,
-                    0,
                 );
                 match self.ingestion.extract_pdf_images(&file_path, doc_id) {
                     Ok(images) => {
@@ -1211,8 +1198,6 @@ When asked about rules or game content, use document_search to find relevant inf
                             Some(current_progress),
                             Some(total_images),
                             None,
-                            0,
-                            image_count,
                         );
                         info!(
                             doc_id = %doc_id,
@@ -1311,25 +1296,13 @@ When asked about rules or game content, use document_search to find relevant inf
             .get_document_images(doc_id)
             .map(|i| i.len())
             .unwrap_or(0);
-        let _ = self
-            .db
-            .update_document_counts(doc_id, total_chunks, total_images);
         let _ = self.db.clear_document_progress(doc_id);
         let _ =
             self.db
                 .update_document_processing_status(doc_id, ProcessingStatus::Completed, None);
 
         // Broadcast completion
-        self.broadcast_document_progress(
-            doc_id,
-            "completed",
-            None,
-            None,
-            None,
-            None,
-            total_chunks,
-            total_images,
-        );
+        self.broadcast_document_progress(doc_id, "completed", None, None, None, None);
 
         info!(
             doc_id = %doc_id,

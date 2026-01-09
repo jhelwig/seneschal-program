@@ -215,6 +215,29 @@ impl Database {
             })?;
         }
 
+        // Migration: Drop denormalized chunk_count and image_count columns
+        // These are now computed dynamically via SQL subqueries
+        let has_chunk_count: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('documents') WHERE name='chunk_count'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+            > 0;
+
+        if has_chunk_count {
+            conn.execute_batch(
+                r#"
+                ALTER TABLE documents DROP COLUMN chunk_count;
+                ALTER TABLE documents DROP COLUMN image_count;
+                "#,
+            )
+            .map_err(|e| DatabaseError::Migration {
+                message: format!("Failed to drop chunk_count/image_count columns: {}", e),
+            })?;
+        }
+
         Ok(())
     }
 
@@ -231,8 +254,8 @@ impl Database {
 
         conn.execute(
             r#"
-            INSERT INTO documents (id, title, file_path, file_hash, access_level, metadata, created_at, updated_at, processing_status, processing_error, chunk_count, image_count, processing_phase, processing_progress, processing_total)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            INSERT INTO documents (id, title, file_path, file_hash, access_level, metadata, created_at, updated_at, processing_status, processing_error, processing_phase, processing_progress, processing_total)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             "#,
             params![
                 doc.id,
@@ -245,8 +268,6 @@ impl Database {
                 doc.updated_at.to_rfc3339(),
                 doc.processing_status.as_str(),
                 doc.processing_error,
-                doc.chunk_count as i64,
-                doc.image_count as i64,
                 doc.processing_phase,
                 doc.processing_progress.map(|p| p as i64),
                 doc.processing_total.map(|t| t as i64),
@@ -272,7 +293,11 @@ impl Database {
 
         let doc = conn
             .query_row(
-                "SELECT id, title, file_path, file_hash, access_level, metadata, created_at, updated_at, processing_status, processing_error, chunk_count, image_count, processing_phase, processing_progress, processing_total FROM documents WHERE id = ?1",
+                "SELECT d.id, d.title, d.file_path, d.file_hash, d.access_level, d.metadata, d.created_at, d.updated_at, d.processing_status, d.processing_error, \
+                 (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as chunk_count, \
+                 (SELECT COUNT(*) FROM document_images WHERE document_id = d.id) as image_count, \
+                 d.processing_phase, d.processing_progress, d.processing_total \
+                 FROM documents d WHERE d.id = ?1",
                 params![id],
                 |row| Document::from_row(row, vec![]),
             )
@@ -315,7 +340,13 @@ impl Database {
 
         if let Some(level) = max_access_level {
             let mut stmt = conn
-                .prepare("SELECT id, title, file_path, file_hash, access_level, metadata, created_at, updated_at, processing_status, processing_error, chunk_count, image_count, processing_phase, processing_progress, processing_total FROM documents WHERE access_level <= ?1 ORDER BY title")
+                .prepare(
+                    "SELECT d.id, d.title, d.file_path, d.file_hash, d.access_level, d.metadata, d.created_at, d.updated_at, d.processing_status, d.processing_error, \
+                     (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as chunk_count, \
+                     (SELECT COUNT(*) FROM document_images WHERE document_id = d.id) as image_count, \
+                     d.processing_phase, d.processing_progress, d.processing_total \
+                     FROM documents d WHERE d.access_level <= ?1 ORDER BY d.title"
+                )
                 .map_err(DatabaseError::Query)?;
             let rows = stmt
                 .query_map(params![level], |row| Document::from_row(row, vec![]))
@@ -325,7 +356,13 @@ impl Database {
             }
         } else {
             let mut stmt = conn
-                .prepare("SELECT id, title, file_path, file_hash, access_level, metadata, created_at, updated_at, processing_status, processing_error, chunk_count, image_count, processing_phase, processing_progress, processing_total FROM documents ORDER BY title")
+                .prepare(
+                    "SELECT d.id, d.title, d.file_path, d.file_hash, d.access_level, d.metadata, d.created_at, d.updated_at, d.processing_status, d.processing_error, \
+                     (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as chunk_count, \
+                     (SELECT COUNT(*) FROM document_images WHERE document_id = d.id) as image_count, \
+                     d.processing_phase, d.processing_progress, d.processing_total \
+                     FROM documents d ORDER BY d.title"
+                )
                 .map_err(DatabaseError::Query)?;
             let rows = stmt
                 .query_map([], |row| Document::from_row(row, vec![]))
@@ -966,13 +1003,6 @@ impl Database {
             )
             .map_err(DatabaseError::Query)?;
 
-            // Update the document's image count
-            conn.execute(
-                "UPDATE documents SET image_count = (SELECT COUNT(*) FROM document_images WHERE document_id = ?1), updated_at = datetime('now') WHERE id = ?1",
-                params![doc_id],
-            )
-            .map_err(DatabaseError::Query)?;
-
             Ok(Some((path, doc_id)))
         } else {
             Ok(None)
@@ -992,25 +1022,6 @@ impl Database {
             .execute(
                 "UPDATE documents SET processing_status = ?1, processing_error = ?2, updated_at = datetime('now') WHERE id = ?3",
                 params![status.as_str(), error, document_id],
-            )
-            .map_err(DatabaseError::Query)?;
-
-        Ok(rows > 0)
-    }
-
-    /// Update document chunk and image counts
-    pub fn update_document_counts(
-        &self,
-        document_id: &str,
-        chunk_count: usize,
-        image_count: usize,
-    ) -> ServiceResult<bool> {
-        let conn = self.conn.lock().unwrap();
-
-        let rows = conn
-            .execute(
-                "UPDATE documents SET chunk_count = ?1, image_count = ?2, updated_at = datetime('now') WHERE id = ?3",
-                params![chunk_count as i64, image_count as i64, document_id],
             )
             .map_err(DatabaseError::Query)?;
 
@@ -1078,7 +1089,11 @@ impl Database {
 
         let doc = conn
             .query_row(
-                "SELECT id, title, file_path, file_hash, access_level, metadata, created_at, updated_at, processing_status, processing_error, chunk_count, image_count, processing_phase, processing_progress, processing_total FROM documents WHERE processing_status = 'processing' ORDER BY created_at ASC LIMIT 1",
+                "SELECT d.id, d.title, d.file_path, d.file_hash, d.access_level, d.metadata, d.created_at, d.updated_at, d.processing_status, d.processing_error, \
+                 (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as chunk_count, \
+                 (SELECT COUNT(*) FROM document_images WHERE document_id = d.id) as image_count, \
+                 d.processing_phase, d.processing_progress, d.processing_total \
+                 FROM documents d WHERE d.processing_status = 'processing' ORDER BY d.created_at ASC LIMIT 1",
                 [],
                 |row| Document::from_row(row, vec![]),
             )
@@ -1154,6 +1169,19 @@ impl Database {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM chunks WHERE document_id = ?1",
+                params![document_id],
+                |row| row.get(0),
+            )
+            .map_err(DatabaseError::Query)?;
+        Ok(count as usize)
+    }
+
+    /// Get count of images for a document
+    pub fn get_image_count(&self, document_id: &str) -> ServiceResult<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM document_images WHERE document_id = ?1",
                 params![document_id],
                 |row| row.get(0),
             )
