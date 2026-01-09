@@ -735,6 +735,133 @@ When asked about rules or game content, use document_search to find relevant inf
                     Err(e) => ToolResult::error(call.id.clone(), e.to_string()),
                 }
             }
+            "image_list" => {
+                let doc_id = call
+                    .args
+                    .get("document_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let page = call
+                    .args
+                    .get("page")
+                    .and_then(|v| v.as_i64())
+                    .map(|p| p as i32);
+                let limit = call
+                    .args
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(20) as usize;
+
+                match self
+                    .db
+                    .list_document_images(user_context.role, Some(doc_id), page, limit)
+                {
+                    Ok(images) => {
+                        let image_list: Vec<_> = images
+                            .into_iter()
+                            .map(|img| {
+                                serde_json::json!({
+                                    "id": img.image.id,
+                                    "page_number": img.image.page_number,
+                                    "image_index": img.image.image_index,
+                                    "width": img.image.width,
+                                    "height": img.image.height,
+                                    "description": img.image.description
+                                })
+                            })
+                            .collect();
+
+                        ToolResult::success(
+                            call.id.clone(),
+                            serde_json::json!({ "images": image_list }),
+                        )
+                    }
+                    Err(e) => ToolResult::error(call.id.clone(), e.to_string()),
+                }
+            }
+            "image_search" => {
+                let query = call
+                    .args
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let doc_id = call.args.get("document_id").and_then(|v| v.as_str());
+                let limit = call
+                    .args
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(10) as usize;
+
+                // Generate embedding for the query
+                match self.search.embed_text(query).await {
+                    Ok(embedding) => {
+                        match self.db.search_images(&embedding, user_context.role, limit) {
+                            Ok(results) => {
+                                // Filter by document_id if specified
+                                let filtered: Vec<_> = results
+                                    .into_iter()
+                                    .filter(|(img, _)| {
+                                        doc_id.is_none_or(|d| img.image.document_id == d)
+                                    })
+                                    .map(|(img, score)| {
+                                        serde_json::json!({
+                                            "id": img.image.id,
+                                            "document_id": img.image.document_id,
+                                            "document_title": img.document_title,
+                                            "page_number": img.image.page_number,
+                                            "image_index": img.image.image_index,
+                                            "description": img.image.description,
+                                            "similarity": score
+                                        })
+                                    })
+                                    .collect();
+
+                                ToolResult::success(
+                                    call.id.clone(),
+                                    serde_json::json!({ "images": filtered }),
+                                )
+                            }
+                            Err(e) => ToolResult::error(call.id.clone(), e.to_string()),
+                        }
+                    }
+                    Err(e) => ToolResult::error(
+                        call.id.clone(),
+                        format!("Failed to generate embedding: {}", e),
+                    ),
+                }
+            }
+            "image_get" => {
+                let image_id = call
+                    .args
+                    .get("image_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                match self.db.get_document_image(image_id) {
+                    Ok(Some(img)) => {
+                        if img.access_level.accessible_by(user_context.role) {
+                            ToolResult::success(
+                                call.id.clone(),
+                                serde_json::json!({
+                                    "id": img.image.id,
+                                    "document_id": img.image.document_id,
+                                    "document_title": img.document_title,
+                                    "page_number": img.image.page_number,
+                                    "image_index": img.image.image_index,
+                                    "width": img.image.width,
+                                    "height": img.image.height,
+                                    "description": img.image.description
+                                }),
+                            )
+                        } else {
+                            ToolResult::error(call.id.clone(), "Access denied".to_string())
+                        }
+                    }
+                    Ok(None) => ToolResult::error(call.id.clone(), "Image not found".to_string()),
+                    Err(e) => ToolResult::error(call.id.clone(), e.to_string()),
+                }
+            }
             "system_schema" => {
                 // Return a placeholder schema - in reality this would come from FVTT
                 let schema = serde_json::json!({

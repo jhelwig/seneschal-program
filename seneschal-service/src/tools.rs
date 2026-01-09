@@ -644,6 +644,73 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
         OllamaToolDefinition {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
+                name: "image_list".to_string(),
+                description: "List images from a document. Use document_find first to get the document ID, then use this to get images from specific pages.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "document_id": {
+                            "type": "string",
+                            "description": "The document ID"
+                        },
+                        "page": {
+                            "type": "integer",
+                            "description": "Optional: filter to images from this specific page number"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum images to return (default 20)"
+                        }
+                    },
+                    "required": ["document_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "image_search".to_string(),
+                description: "Search for images by description using semantic similarity. Good for finding maps, portraits, deck plans, etc.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Description of the image to find"
+                        },
+                        "document_id": {
+                            "type": "string",
+                            "description": "Optional: limit search to a specific document"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results (default 10)"
+                        }
+                    },
+                    "required": ["query"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "image_get".to_string(),
+                description: "Get detailed information about a specific image by its ID.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "image_id": {
+                            "type": "string",
+                            "description": "The image ID"
+                        }
+                    },
+                    "required": ["image_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
                 name: "fvtt_read".to_string(),
                 description: "Read a Foundry VTT document (Actor, Item, etc.). Respects user permissions.".to_string(),
                 parameters: serde_json::json!({
@@ -834,6 +901,9 @@ pub fn classify_tool(tool_name: &str) -> ToolLocation {
         | "document_get"
         | "document_list"
         | "document_find"
+        | "image_list"
+        | "image_search"
+        | "image_get"
         | "system_schema"
         | "traveller_uwp_parse"
         | "traveller_jump_calc"
