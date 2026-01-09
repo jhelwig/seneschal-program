@@ -648,6 +648,93 @@ When asked about rules or game content, use document_search to find relevant inf
                     Err(e) => ToolResult::error(call.id.clone(), e.to_string()),
                 }
             }
+            "document_list" => {
+                let tags: Vec<String> = call
+                    .args
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                match self.db.list_documents(Some(user_context.role)) {
+                    Ok(docs) => {
+                        // Filter by tags if specified
+                        let filtered: Vec<_> = if tags.is_empty() {
+                            docs
+                        } else {
+                            docs.into_iter()
+                                .filter(|d| tags.iter().any(|t| d.tags.contains(t)))
+                                .collect()
+                        };
+
+                        // Return simplified list with just id, title, tags
+                        let doc_list: Vec<serde_json::Value> = filtered
+                            .into_iter()
+                            .map(|d| {
+                                serde_json::json!({
+                                    "id": d.id,
+                                    "title": d.title,
+                                    "tags": d.tags,
+                                    "chunk_count": d.chunk_count,
+                                    "image_count": d.image_count
+                                })
+                            })
+                            .collect();
+
+                        ToolResult::success(
+                            call.id.clone(),
+                            serde_json::json!({ "documents": doc_list }),
+                        )
+                    }
+                    Err(e) => ToolResult::error(call.id.clone(), e.to_string()),
+                }
+            }
+            "document_find" => {
+                let title_query = call
+                    .args
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                match self.db.list_documents(Some(user_context.role)) {
+                    Ok(docs) => {
+                        let query_lower = title_query.to_lowercase();
+                        let matches: Vec<serde_json::Value> = docs
+                            .into_iter()
+                            .filter(|d| d.title.to_lowercase().contains(&query_lower))
+                            .map(|d| {
+                                serde_json::json!({
+                                    "id": d.id,
+                                    "title": d.title,
+                                    "tags": d.tags,
+                                    "chunk_count": d.chunk_count,
+                                    "image_count": d.image_count
+                                })
+                            })
+                            .collect();
+
+                        if matches.is_empty() {
+                            ToolResult::success(
+                                call.id.clone(),
+                                serde_json::json!({
+                                    "documents": [],
+                                    "message": format!("No documents found matching '{}'", title_query)
+                                }),
+                            )
+                        } else {
+                            ToolResult::success(
+                                call.id.clone(),
+                                serde_json::json!({ "documents": matches }),
+                            )
+                        }
+                    }
+                    Err(e) => ToolResult::error(call.id.clone(), e.to_string()),
+                }
+            }
             "system_schema" => {
                 // Return a placeholder schema - in reality this would come from FVTT
                 let schema = serde_json::json!({

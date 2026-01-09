@@ -610,6 +610,40 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
         OllamaToolDefinition {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
+                name: "document_list".to_string(),
+                description: "List all available documents (rulebooks, scenarios) with their IDs and titles.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "tags": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Optional tags to filter documents"
+                        }
+                    }
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "document_find".to_string(),
+                description: "Find documents by title (case-insensitive partial match). Returns document IDs and metadata.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "The document title to search for (partial match)"
+                        }
+                    },
+                    "required": ["title"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
                 name: "fvtt_read".to_string(),
                 description: "Read a Foundry VTT document (Actor, Item, etc.). Respects user permissions.".to_string(),
                 parameters: serde_json::json!({
@@ -798,6 +832,8 @@ pub fn classify_tool(tool_name: &str) -> ToolLocation {
     match tool_name {
         "document_search"
         | "document_get"
+        | "document_list"
+        | "document_find"
         | "system_schema"
         | "traveller_uwp_parse"
         | "traveller_jump_calc"

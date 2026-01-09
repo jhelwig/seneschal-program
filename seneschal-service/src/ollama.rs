@@ -247,9 +247,18 @@ impl OllamaClient {
                                         for (i, call) in calls.into_iter().enumerate() {
                                             let tool_call = ToolCall {
                                                 id: format!("tc_{}", tool_call_count + i),
-                                                tool: call.function.name,
-                                                args: call.function.arguments,
+                                                tool: call.function.name.clone(),
+                                                args: call.function.arguments.clone(),
                                             };
+
+                                            // Log tool call details for debugging
+                                            debug!(
+                                                tool_call_id = %tool_call.id,
+                                                tool_name = %call.function.name,
+                                                tool_args = %call.function.arguments,
+                                                "LLM requested tool call"
+                                            );
+
                                             tool_call_count += 1;
                                             if tx
                                                 .send(StreamEvent::ToolCall(tool_call))
