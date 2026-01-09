@@ -678,7 +678,7 @@ impl Database {
         let source_pages_json = image
             .source_pages
             .as_ref()
-            .map(|pages| serde_json::to_string(pages))
+            .map(serde_json::to_string)
             .transpose()
             .map_err(DatabaseError::Serialization)?;
 

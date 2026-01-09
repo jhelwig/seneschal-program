@@ -41,6 +41,12 @@ image = { workspace = true }
 poppler-rs = { workspace = true }
 cairo-rs = { workspace = true }
 
+# Image processing for affine transformations
+imageproc = { workspace = true }
+
+# PDF structure parsing for CTM extraction
+qpdf = { workspace = true }
+
 # EPUB processing
 epub = { workspace = true }
 

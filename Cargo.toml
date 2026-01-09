@@ -43,6 +43,12 @@ image = "0.25"
 poppler-rs = "0.24"
 cairo-rs = { version = "0.20", features = ["png"] }
 
+# Image processing for affine transformations
+imageproc = "0.25"
+
+# PDF structure parsing for CTM extraction (requires libqpdf-dev)
+qpdf = "0.3"
+
 # EPUB processing
 epub = "2.1"
 

@@ -3,9 +3,11 @@ use image::codecs::webp::WebPEncoder;
 use image::{ImageEncoder, RgbaImage};
 use pdfium_render::prelude::*;
 use poppler::Document as PopplerDocument;
+use qpdf::{QPdf, StreamDecodeLevel};
+use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 use uuid::Uuid;
 
 use crate::config::EmbeddingsConfig;
@@ -56,6 +58,8 @@ struct ImageInfo {
     page_width: f64,
     /// Page height in PDF points
     page_height: f64,
+    /// Transformation matrix from PDF CTM (if found)
+    transform: Option<[f64; 6]>,
 }
 
 /// Check if two rectangles overlap by more than a threshold percentage
@@ -590,14 +594,32 @@ fn calculate_cross_page_bounds(images: &[ImageInfo], indices: &[usize]) -> (Rect
 /// transformed to a unified space where pages are laid out horizontally.
 ///
 /// Layers are composited back-to-front based on image_id (lower IDs = back layers).
+///
+/// Transformation matrices (CTMs) are applied to correct image orientation.
 fn composite_group(images: &[ImageInfo], indices: &[usize]) -> Option<RgbaImage> {
     if indices.is_empty() {
         return None;
     }
 
     if indices.len() == 1 {
-        // Single image - just convert to RGBA
-        return Some(convert_to_rgba(&images[indices[0]]));
+        // Single image - convert to RGBA and apply transform if needed
+        let info = &images[indices[0]];
+        let mut img = convert_to_rgba(info);
+
+        // Apply transformation if present and needed
+        if let Some(ref matrix) = info.transform
+            && needs_transformation(matrix)
+        {
+            info!(
+                page = info.page_number + 1,
+                image_id = info.image_id,
+                matrix = ?matrix,
+                "Applying transformation to single image"
+            );
+            img = apply_transform(&img, matrix);
+        }
+
+        return Some(img);
     }
 
     // Check if this is a cross-page group
@@ -642,6 +664,19 @@ fn composite_group(images: &[ImageInfo], indices: &[usize]) -> Option<RgbaImage>
         let info = &images[idx];
         let mut layer = convert_to_rgba(info);
 
+        // Apply transformation if present and needed
+        if let Some(ref matrix) = info.transform
+            && needs_transformation(matrix)
+        {
+            info!(
+                page = info.page_number + 1,
+                image_id = info.image_id,
+                matrix = ?matrix,
+                "Applying transformation to layer in composite"
+            );
+            layer = apply_transform(&layer, matrix);
+        }
+
         // Each image has a native resolution (pixels) and a PDF bounding box (points).
         // To composite correctly, we need to scale each image so it fills its bounding
         // box at the canvas resolution (max_scale pixels per point).
@@ -673,6 +708,543 @@ fn composite_group(images: &[ImageInfo], indices: &[usize]) -> Option<RgbaImage>
     }
 
     Some(canvas)
+}
+
+/// Transformation matrix extracted from PDF content stream
+/// Represents the CTM (Current Transformation Matrix) applied to an image
+#[derive(Debug, Clone)]
+struct ImageTransform {
+    /// XObject name (e.g., "Im0", "I129") - kept for debugging
+    #[allow(dead_code)]
+    xobject_name: String,
+    /// 6-element transformation matrix [a, b, c, d, e, f]
+    /// [a b 0]
+    /// [c d 0]
+    /// [e f 1]
+    matrix: [f64; 6],
+    /// Expected width of the transformed image (calculated from CTM)
+    /// width = sqrt(a² + b²)
+    expected_width: f64,
+    /// Expected height of the transformed image (calculated from CTM)
+    /// height = sqrt(c² + d²)
+    expected_height: f64,
+    /// Axis-aligned bounding box computed from CTM (for rotated images)
+    /// This gives the TRUE position on the page after transformation
+    computed_bounds: Option<(f64, f64, f64, f64)>, // (x1, y1, x2, y2)
+}
+
+/// Compute the axis-aligned bounding box from a CTM
+/// The CTM transforms a unit square [0,0] to [1,1] to the final position
+fn compute_bounds_from_ctm(matrix: &[f64; 6]) -> (f64, f64, f64, f64) {
+    let [a, b, c, d, e, f] = *matrix;
+
+    // Transform the four corners of the unit square
+    // Corner [0,0] -> (e, f)
+    // Corner [1,0] -> (a+e, b+f)
+    // Corner [0,1] -> (c+e, d+f)
+    // Corner [1,1] -> (a+c+e, b+d+f)
+    let corners = [
+        (e, f),
+        (a + e, b + f),
+        (c + e, d + f),
+        (a + c + e, b + d + f),
+    ];
+
+    let min_x = corners.iter().map(|c| c.0).fold(f64::MAX, f64::min);
+    let max_x = corners.iter().map(|c| c.0).fold(f64::MIN, f64::max);
+    let min_y = corners.iter().map(|c| c.1).fold(f64::MAX, f64::min);
+    let max_y = corners.iter().map(|c| c.1).fold(f64::MIN, f64::max);
+
+    (min_x, min_y, max_x, max_y)
+}
+
+/// Extract transformation matrices for images from PDF using qpdf
+/// Returns a map of page_num -> Vec<ImageTransform> for matching by dimensions
+fn extract_image_transforms_with_qpdf(
+    path: &Path,
+) -> Result<HashMap<usize, Vec<ImageTransform>>, ProcessingError> {
+    use qpdf::{QPdfObjectLike, QPdfObjectType, QPdfStream};
+
+    let pdf = QPdf::read(path).map_err(|e| ProcessingError::TextExtraction {
+        page: 0,
+        source: Box::new(std::io::Error::other(format!(
+            "Failed to load PDF with qpdf: {}",
+            e
+        ))),
+    })?;
+
+    let mut transforms: HashMap<usize, Vec<ImageTransform>> = HashMap::new();
+    let pages = pdf
+        .get_pages()
+        .map_err(|e| ProcessingError::TextExtraction {
+            page: 0,
+            source: Box::new(std::io::Error::other(format!(
+                "Failed to get pages from PDF: {}",
+                e
+            ))),
+        })?;
+
+    let mut total_form_xobjects = 0;
+    let mut total_with_ctm = 0;
+
+    for (page_idx, page_dict) in pages.iter().enumerate() {
+        // Get the page's Resources dictionary
+        let resources = match page_dict.get("/Resources") {
+            Some(r) => r,
+            None => {
+                trace!(page = page_idx + 1, "No /Resources dictionary on page");
+                continue;
+            }
+        };
+
+        // Convert to dictionary to access keys
+        let resources_dict: qpdf::QPdfDictionary = resources.into();
+
+        // Get XObject dictionary from Resources
+        let xobjects = match resources_dict.get("/XObject") {
+            Some(x) => x,
+            None => {
+                trace!(page = page_idx + 1, "No /XObject dictionary in Resources");
+                continue;
+            }
+        };
+
+        let xobjects_dict: qpdf::QPdfDictionary = xobjects.into();
+
+        // Get all XObject names
+        let xobject_keys = xobjects_dict.keys();
+        trace!(page = page_idx + 1, xobjects = xobject_keys.len(), "Found XObjects on page");
+
+        // For each Form XObject, extract CTM from its content stream
+        for key in xobject_keys {
+            let xobject = match xobjects_dict.get(&key) {
+                Some(obj) => obj,
+                None => continue,
+            };
+
+            // Check if it's a stream (Form XObjects are streams)
+            if xobject.get_type() != QPdfObjectType::Stream {
+                continue;
+            }
+
+            // Convert to dictionary to check subtype
+            let xobject_stream: QPdfStream = xobject.clone().into();
+            let xobject_dict = xobject_stream.get_dictionary();
+
+            // Check if it's a Form XObject (not an Image XObject)
+            let subtype = match xobject_dict.get("/Subtype") {
+                Some(s) => s.as_name(),
+                None => continue,
+            };
+
+            if subtype != "/Form" {
+                continue;
+            }
+
+            total_form_xobjects += 1;
+
+            // Get the content stream data
+            let data = match xobject_stream.get_data(StreamDecodeLevel::Generalized) {
+                Ok(d) => d,
+                Err(e) => {
+                    trace!(page = page_idx + 1, xobject = %key, error = %e, "Failed to decode Form XObject stream");
+                    continue;
+                }
+            };
+
+            let content = String::from_utf8_lossy(&data);
+
+            // Parse content stream for CTM + image draw commands
+            // Pattern: [a b c d e f] cm ... /ImN Do
+            if let Some(transform) = parse_content_stream_for_ctm(&content, &key) {
+                total_with_ctm += 1;
+
+                // Only store transforms that indicate rotation/mirroring
+                if needs_transformation(&transform.matrix) {
+                    info!(
+                        page = page_idx + 1,
+                        xobject = %transform.xobject_name,
+                        matrix = ?transform.matrix,
+                        expected_width = format!("{:.1}", transform.expected_width),
+                        expected_height = format!("{:.1}", transform.expected_height),
+                        "Found rotation/mirroring CTM in Form XObject"
+                    );
+                    transforms.entry(page_idx).or_default().push(transform);
+                } else {
+                    trace!(
+                        page = page_idx + 1,
+                        xobject = %transform.xobject_name,
+                        matrix = ?transform.matrix,
+                        "Form XObject has identity-like CTM (no rotation/mirroring)"
+                    );
+                }
+            }
+        }
+    }
+
+    info!(
+        total_form_xobjects = total_form_xobjects,
+        form_xobjects_with_ctm = total_with_ctm,
+        transforms_with_rotation = transforms.values().map(|v| v.len()).sum::<usize>(),
+        pages_with_transforms = transforms.len(),
+        "Extracted image transforms with qpdf"
+    );
+
+    Ok(transforms)
+}
+
+/// Parse a PDF content stream to extract the CTM applied to images
+/// Returns the cumulative CTM if a cm operator and image draw (Do) are found
+/// Captures the CTM at the moment of the Do command, not after graphics state restore
+fn parse_content_stream_for_ctm(content: &str, xobject_name: &str) -> Option<ImageTransform> {
+    // Track graphics state stack for cumulative CTM
+    let mut ctm_stack: Vec<[f64; 6]> = vec![[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]]; // Identity matrix
+    let mut current_ctm = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    // Capture the CTM at the moment of Do, not after Q restores it
+    let mut captured_ctm: Option<[f64; 6]> = None;
+    let mut found_image_name: Option<String> = None;
+
+    // Tokenize the content stream
+    let tokens: Vec<&str> = content.split_whitespace().collect();
+    let mut i = 0;
+
+    while i < tokens.len() {
+        let token = tokens[i];
+
+        match token {
+            "q" => {
+                // Save graphics state
+                ctm_stack.push(current_ctm);
+            }
+            "Q" => {
+                // Restore graphics state
+                if let Some(saved) = ctm_stack.pop() {
+                    current_ctm = saved;
+                }
+            }
+            "cm" => {
+                // Concatenate matrix: need 6 numbers before "cm"
+                if i >= 6
+                    && let (Ok(a), Ok(b), Ok(c), Ok(d), Ok(e), Ok(f)) = (
+                        tokens[i - 6].parse::<f64>(),
+                        tokens[i - 5].parse::<f64>(),
+                        tokens[i - 4].parse::<f64>(),
+                        tokens[i - 3].parse::<f64>(),
+                        tokens[i - 2].parse::<f64>(),
+                        tokens[i - 1].parse::<f64>(),
+                    )
+                {
+                    let new_matrix = [a, b, c, d, e, f];
+                    current_ctm = multiply_matrices(&current_ctm, &new_matrix);
+                }
+            }
+            "Do" => {
+                // Draw XObject - capture the CTM at this moment
+                // Only capture for Image XObjects (typically /ImN), not Form XObjects (/FmN)
+                if i >= 1 {
+                    let name = tokens[i - 1].trim_start_matches('/');
+                    // Image XObjects are typically named ImN, Img, Image, etc.
+                    // Form XObjects are typically named FmN, Form, etc.
+                    // We want to capture CTMs only for actual image draws
+                    if name.starts_with("Im") || name.starts_with("Img") || name.starts_with("Image") {
+                        found_image_name = Some(name.to_string());
+                        // Capture the CTM at the moment of drawing, before any Q restores it
+                        captured_ctm = Some(current_ctm);
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    // Return the CTM that was in effect when Do was called
+    if found_image_name.is_some()
+        && let Some(ctm) = captured_ctm
+    {
+        let [a, b, c, d, _e, _f] = ctm;
+        // Calculate expected dimensions from CTM
+        // The CTM transforms unit vectors, so:
+        // - width = length of transformed (1,0) = sqrt(a² + b²)
+        // - height = length of transformed (0,1) = sqrt(c² + d²)
+        let expected_width = (a * a + b * b).sqrt();
+        let expected_height = (c * c + d * d).sqrt();
+
+        // Compute the axis-aligned bounding box from the CTM
+        // This gives us the TRUE position on the page after transformation
+        let computed_bounds = Some(compute_bounds_from_ctm(&ctm));
+
+        Some(ImageTransform {
+            xobject_name: xobject_name.trim_start_matches('/').to_string(),
+            matrix: ctm,
+            expected_width,
+            expected_height,
+            computed_bounds,
+        })
+    } else {
+        None
+    }
+}
+
+/// Multiply two 2D transformation matrices
+/// [a1 b1 0]   [a2 b2 0]
+/// [c1 d1 0] * [c2 d2 0]
+/// [e1 f1 1]   [e2 f2 1]
+fn multiply_matrices(m1: &[f64; 6], m2: &[f64; 6]) -> [f64; 6] {
+    let [a1, b1, c1, d1, e1, f1] = *m1;
+    let [a2, b2, c2, d2, e2, f2] = *m2;
+
+    [
+        a1 * a2 + b1 * c2,
+        a1 * b2 + b1 * d2,
+        c1 * a2 + d1 * c2,
+        c1 * b2 + d1 * d2,
+        e1 * a2 + f1 * c2 + e2,
+        e1 * b2 + f1 * d2 + f2,
+    ]
+}
+
+/// Match a poppler image with a qpdf-extracted CTM using dimension AND position matching
+/// The CTM's expected dimensions are compared with poppler's bounding box dimensions,
+/// AND the CTM's computed position must be reasonably close to poppler's reported position.
+/// This prevents matching images that have similar dimensions but are on different parts of the page.
+/// Returns the matching ImageTransform if found (includes matrix and computed_bounds)
+fn find_matching_transform(
+    page_num: usize,
+    image_width: f64,
+    image_height: f64,
+    poppler_area: &Rectangle,
+    transforms: &HashMap<usize, Vec<ImageTransform>>,
+) -> Option<ImageTransform> {
+    // Get transforms for this page
+    let page_transforms = match transforms.get(&page_num) {
+        Some(t) => t,
+        None => {
+            trace!(
+                page = page_num + 1,
+                image_width = format!("{:.1}", image_width),
+                image_height = format!("{:.1}", image_height),
+                "No transforms available for this page"
+            );
+            return None;
+        }
+    };
+
+    // Find the transform whose expected dimensions best match the image dimensions
+    // Allow 5% tolerance for dimension matching
+    let dimension_tolerance = 0.05;
+    // Allow position to differ by up to 50 points (for minor discrepancies)
+    let position_tolerance = 50.0;
+
+    // Calculate poppler's center point
+    let poppler_cx = (poppler_area.x1 + poppler_area.x2) / 2.0;
+    let poppler_cy = (poppler_area.y1 + poppler_area.y2) / 2.0;
+
+    for transform in page_transforms {
+        let width_ratio = (transform.expected_width - image_width).abs() / image_width.max(1.0);
+        let height_ratio = (transform.expected_height - image_height).abs() / image_height.max(1.0);
+
+        // Check dimensions first
+        if width_ratio >= dimension_tolerance || height_ratio >= dimension_tolerance {
+            continue;
+        }
+
+        // Dimensions match - now check position
+        // For rotated images, poppler's bbox can be very wrong, but often gets at least
+        // one corner coordinate correct. Check if ANY corner is close.
+        if let Some((ctm_x1, ctm_y1, ctm_x2, ctm_y2)) = transform.computed_bounds {
+            // Check multiple position criteria - any one matching is sufficient
+            let x1_close = (ctm_x1 - poppler_area.x1).abs() < position_tolerance;
+            let x2_close = (ctm_x2 - poppler_area.x2).abs() < position_tolerance;
+            let y1_close = (ctm_y1 - poppler_area.y1).abs() < position_tolerance;
+            let y2_close = (ctm_y2 - poppler_area.y2).abs() < position_tolerance;
+
+            // Also check center proximity as before
+            let ctm_cx = (ctm_x1 + ctm_x2) / 2.0;
+            let ctm_cy = (ctm_y1 + ctm_y2) / 2.0;
+            let center_close = (ctm_cx - poppler_cx).abs() < position_tolerance
+                && (ctm_cy - poppler_cy).abs() < position_tolerance;
+
+            // Accept if centers are close OR if at least one x AND one y coordinate match
+            let position_matches = center_close || ((x1_close || x2_close) && (y1_close || y2_close));
+
+            // For rotated images, poppler often gets x1 right but y completely wrong
+            // Be more lenient: accept if x1 matches closely even if y is off
+            let x1_very_close = (ctm_x1 - poppler_area.x1).abs() < 5.0; // Within 5 points
+
+            trace!(
+                page = page_num + 1,
+                image_dims = format!("{:.1} x {:.1}", image_width, image_height),
+                ctm_dims = format!("{:.1} x {:.1}", transform.expected_width, transform.expected_height),
+                poppler_bbox = format!("({:.1},{:.1})-({:.1},{:.1})", poppler_area.x1, poppler_area.y1, poppler_area.x2, poppler_area.y2),
+                ctm_bbox = format!("({:.1},{:.1})-({:.1},{:.1})", ctm_x1, ctm_y1, ctm_x2, ctm_y2),
+                x1_close = x1_close,
+                x1_very_close = x1_very_close,
+                center_close = center_close,
+                "Comparing image dimensions and position with CTM"
+            );
+
+            // If positions don't match by any criterion, skip this CTM
+            if !position_matches && !x1_very_close {
+                debug!(
+                    page = page_num + 1,
+                    image_dims = format!("{:.1} x {:.1}", image_width, image_height),
+                    poppler_bbox = format!("({:.1},{:.1})-({:.1},{:.1})", poppler_area.x1, poppler_area.y1, poppler_area.x2, poppler_area.y2),
+                    ctm_bbox = format!("({:.1},{:.1})-({:.1},{:.1})", ctm_x1, ctm_y1, ctm_x2, ctm_y2),
+                    "Dimensions match but no position criterion met - skipping CTM"
+                );
+                continue;
+            }
+
+            info!(
+                page = page_num + 1,
+                image_dims = format!("{:.1} x {:.1}", image_width, image_height),
+                ctm_dims = format!("{:.1} x {:.1}", transform.expected_width, transform.expected_height),
+                poppler_pos = format!("({:.1},{:.1})-({:.1},{:.1})", poppler_area.x1, poppler_area.y1, poppler_area.x2, poppler_area.y2),
+                ctm_pos = format!("({:.1},{:.1})-({:.1},{:.1})", ctm_x1, ctm_y1, ctm_x2, ctm_y2),
+                matrix = ?transform.matrix,
+                "Matched image to CTM by dimensions and position"
+            );
+            return Some(transform.clone());
+        } else {
+            // No computed bounds - fall back to dimension-only matching
+            info!(
+                page = page_num + 1,
+                image_dims = format!("{:.1} x {:.1}", image_width, image_height),
+                ctm_dims = format!("{:.1} x {:.1}", transform.expected_width, transform.expected_height),
+                matrix = ?transform.matrix,
+                "Matched image to CTM by dimensions (no position check)"
+            );
+            return Some(transform.clone());
+        }
+    }
+
+    debug!(
+        page = page_num + 1,
+        image_dims = format!("{:.1} x {:.1}", image_width, image_height),
+        available_ctms = page_transforms.len(),
+        "No matching CTM found for image dimensions and position"
+    );
+
+    None
+}
+
+/// Check if a transformation matrix indicates the image needs to be transformed
+/// (i.e., it's not an identity or simple scaling matrix)
+fn needs_transformation(matrix: &[f64; 6]) -> bool {
+    let [a, b, c, d, _e, _f] = *matrix;
+
+    // Check if this is approximately an identity matrix (with possible scaling)
+    // Identity: a=1, b=0, c=0, d=1 (or negative for flipping)
+    // Simple scale: a>0, b=0, c=0, d>0
+
+    // If b or c are non-zero, there's rotation
+    let has_rotation = b.abs() > 0.01 || c.abs() > 0.01;
+
+    // If a or d are negative, there's mirroring
+    let has_mirroring = a < 0.0 || d < 0.0;
+
+    has_rotation || has_mirroring
+}
+
+/// Apply transformation matrix to an image using affine transformation
+/// The CTM matrix [a, b, c, d, e, f] is normalized to remove scaling
+/// and applied to correct the image orientation.
+fn apply_transform(image: &RgbaImage, matrix: &[f64; 6]) -> RgbaImage {
+    use imageproc::geometric_transformations::{Interpolation, Projection, warp_into};
+
+    let [a, b, c, d, _e, _f] = *matrix;
+
+    // Calculate scale factors (length of transformed unit vectors)
+    // scale_x = length of (a, b) = sqrt(a² + b²)
+    // scale_y = length of (c, d) = sqrt(c² + d²)
+    let scale_x = (a * a + b * b).sqrt();
+    let scale_y = (c * c + d * d).sqrt();
+
+    if scale_x < 0.001 || scale_y < 0.001 {
+        warn!("Invalid scale factors in CTM, skipping transformation");
+        return image.clone();
+    }
+
+    // Normalize the matrix to remove scaling (we want rotation/mirroring only)
+    // The poppler image is already at the correct pixel dimensions
+    let a_norm = a / scale_x;
+    let b_norm = b / scale_x;
+    let c_norm = c / scale_y;
+    let d_norm = d / scale_y;
+
+    // Calculate determinant to check for mirroring
+    let det = a_norm * d_norm - b_norm * c_norm;
+
+    // Calculate rotation angle
+    let rotation_deg = f64::atan2(b_norm, a_norm).to_degrees();
+
+    info!(
+        a_norm = a_norm,
+        b_norm = b_norm,
+        c_norm = c_norm,
+        d_norm = d_norm,
+        det = det,
+        rotation_deg = rotation_deg,
+        "Applying affine transformation"
+    );
+
+    let (width, height) = image.dimensions();
+
+    // For the transformation, we need to:
+    // 1. Center the image at origin
+    // 2. Apply the inverse of the normalized CTM (to map output coords to input coords)
+    // 3. Translate back
+
+    // The inverse of [a, b; c, d] is (1/det) * [d, -b; -c, a]
+    let inv_det = 1.0 / det;
+    let inv_a = d_norm * inv_det;
+    let inv_b = -b_norm * inv_det;
+    let inv_c = -c_norm * inv_det;
+    let inv_d = a_norm * inv_det;
+
+    // Create the projection matrix for imageproc
+    // The affine transformation maps (x, y) -> (ax + cy + e, bx + dy + f)
+    // We need to handle the centering: transform around the image center
+    let cx = width as f64 / 2.0;
+    let cy = height as f64 / 2.0;
+
+    // Combined transformation: translate to center, apply inverse rotation, translate back
+    // For output point (x, y), find input point:
+    // 1. Translate: (x - cx, y - cy)
+    // 2. Apply inverse: (inv_a * (x-cx) + inv_c * (y-cy), inv_b * (x-cx) + inv_d * (y-cy))
+    // 3. Translate back: add (cx, cy)
+    //
+    // Final: x_in = inv_a * x + inv_c * y + (cx - inv_a * cx - inv_c * cy)
+    //        y_in = inv_b * x + inv_d * y + (cy - inv_b * cx - inv_d * cy)
+    let tx = cx - inv_a * cx - inv_c * cy;
+    let ty = cy - inv_b * cx - inv_d * cy;
+
+    // Create projection using the inverse transformation
+    // Projection expects [a, b, c; d, e, f; g, h, i] for projective transform
+    // For affine: [a, b, tx; c, d, ty; 0, 0, 1]
+    // But imageproc's Projection uses different ordering, let me check...
+    // From imageproc docs: Projection::from_matrix maps (x, y) using the 3x3 matrix
+    #[rustfmt::skip]
+    let projection = Projection::from_matrix([
+        inv_a as f32, inv_c as f32, tx as f32,
+        inv_b as f32, inv_d as f32, ty as f32,
+        0.0,          0.0,          1.0,
+    ]).expect("Failed to create projection matrix");
+
+    // Create output image
+    let mut output = RgbaImage::new(width, height);
+    let default_pixel = image::Rgba([0, 0, 0, 0]); // Transparent background
+
+    warp_into(
+        image,
+        &projection,
+        Interpolation::Bilinear,
+        default_pixel,
+        &mut output,
+    );
+
+    output
 }
 
 /// Create a new Pdfium instance (dynamically linked)
@@ -864,12 +1436,12 @@ impl IngestionService {
             }
 
             let page_index = (page_num - 1) as u16;
-            if let Ok(page) = document.pages().get(page_index) {
-                if let Ok(text) = page.text() {
-                    let page_text = text.all().trim().to_string();
-                    if !page_text.is_empty() {
-                        result.insert(page_num, page_text);
-                    }
+            if let Ok(page) = document.pages().get(page_index)
+                && let Ok(text) = page.text()
+            {
+                let page_text = text.all().trim().to_string();
+                if !page_text.is_empty() {
+                    result.insert(page_num, page_text);
                 }
             }
         }
@@ -888,6 +1460,8 @@ impl IngestionService {
     ///
     /// Uses poppler-rs for programmatic access to PDF images with position information,
     /// allowing proper layer compositing (e.g., character artwork with drop shadows).
+    /// Uses qpdf to extract transformation matrices (CTMs) and applies them to correct
+    /// image orientation (rotation, mirroring).
     pub fn extract_pdf_images(
         &self,
         path: &Path,
@@ -896,6 +1470,26 @@ impl IngestionService {
         // Create images directory for this document
         let images_dir = self.data_dir.join("images").join(document_id);
         std::fs::create_dir_all(&images_dir).map_err(ProcessingError::Io)?;
+
+        // Extract transformation matrices using qpdf first
+        let transforms = match extract_image_transforms_with_qpdf(path) {
+            Ok(t) => {
+                info!(
+                    document_id = document_id,
+                    transforms = t.len(),
+                    "Extracted CTMs from PDF with qpdf"
+                );
+                t
+            }
+            Err(e) => {
+                warn!(
+                    document_id = document_id,
+                    error = %e,
+                    "Failed to extract CTMs with qpdf, continuing without transforms"
+                );
+                HashMap::new()
+            }
+        };
 
         // Load PDF with poppler
         let canonical_path = path.canonicalize().map_err(ProcessingError::Io)?;
@@ -1029,9 +1623,49 @@ impl IngestionService {
                     1.0
                 };
 
+                // Find matching transformation matrix from qpdf using dimension and position matching
+                let matched_transform = find_matching_transform(
+                    page_num as usize,
+                    bounds_width,
+                    bounds_height,
+                    &area,
+                    &transforms,
+                );
+
+                // If we found a transform with computed_bounds (rotation), use those bounds
+                // for overlap detection instead of poppler's potentially incorrect bounds
+                let (final_area, transform_matrix) = if let Some(ref t) = matched_transform {
+                    info!(
+                        page = page_num + 1,
+                        image_id = image_id,
+                        poppler_bounds = format!("{:.1} x {:.1}", bounds_width, bounds_height),
+                        matrix = ?t.matrix,
+                        computed_bounds = ?t.computed_bounds,
+                        "Assigning transformation matrix to image"
+                    );
+
+                    // Use computed_bounds for overlap detection if available
+                    // This fixes rotated images whose poppler bounding box is incorrect
+                    if let Some((x1, y1, x2, y2)) = t.computed_bounds {
+                        let corrected_area = Rectangle { x1, y1, x2, y2 };
+                        info!(
+                            page = page_num + 1,
+                            image_id = image_id,
+                            original_area = format!("({:.1},{:.1})-({:.1},{:.1})", area.x1, area.y1, area.x2, area.y2),
+                            corrected_area = format!("({:.1},{:.1})-({:.1},{:.1})", x1, y1, x2, y2),
+                            "Using CTM-computed bounds for overlap detection"
+                        );
+                        (corrected_area, Some(t.matrix))
+                    } else {
+                        (area, Some(t.matrix))
+                    }
+                } else {
+                    (area, None)
+                };
+
                 page_images.push(ImageInfo {
                     image_id,
-                    area,
+                    area: final_area,
                     surface_data,
                     width,
                     height,
@@ -1043,6 +1677,7 @@ impl IngestionService {
                     page_number: page_num as usize,
                     page_width,
                     page_height,
+                    transform: transform_matrix,
                 });
             }
 
