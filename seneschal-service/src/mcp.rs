@@ -1,3 +1,8 @@
+//! MCP (Model Context Protocol) server implementation.
+//!
+//! This module provides an MCP-compatible interface for external LLM tools
+//! to interact with the Seneschal service.
+
 use axum::{
     Json, Router,
     extract::State,
@@ -11,9 +16,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info};
 
-use crate::search::format_search_results_for_llm;
 use crate::service::SeneschalService;
-use crate::tools::{SearchFilters, TagMatch, TravellerTool};
+
+pub mod handlers;
+pub mod tools;
+
+use handlers::{handle_initialize, handle_tools_list};
+use tools::handle_tool_call;
 
 /// MCP server state
 pub struct McpState {
@@ -97,480 +106,31 @@ async fn mcp_message_handler(
     }
 }
 
-async fn handle_initialize(_state: &McpState) -> Result<serde_json::Value, McpError> {
-    Ok(serde_json::json!({
-        "protocolVersion": "2024-11-05",
-        "capabilities": {
-            "tools": { "listChanged": false }
-        },
-        "serverInfo": {
-            "name": "seneschal-service",
-            "version": env!("CARGO_PKG_VERSION")
-        },
-        "instructions": "Seneschal Program MCP server for game master assistance, document search, and Foundry VTT integration."
-    }))
-}
-
-async fn handle_tools_list(_state: &McpState) -> Result<serde_json::Value, McpError> {
-    let tools = vec![
-        McpToolDefinition {
-            name: "document_search".to_string(),
-            description: "Search game documents (rulebooks, scenarios) using semantic similarity. Good for conceptual queries like 'how do jump drives work'.".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query"
-                    },
-                    "tags": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional tags to filter results"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of results (default 10)"
-                    }
-                },
-                "required": ["query"]
-            }),
-        },
-        McpToolDefinition {
-            name: "document_search_text".to_string(),
-            description: "Search documents using exact keyword matching. Use for specific names, terms, or when semantic search doesn't find what you need. Supports section filtering.".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Keywords to search for (exact matching)"
-                    },
-                    "section": {
-                        "type": "string",
-                        "description": "Optional: filter to content within this section (e.g., 'Adventure 1')"
-                    },
-                    "document_id": {
-                        "type": "string",
-                        "description": "Optional: limit search to a specific document"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of results (default 10)"
-                    }
-                },
-                "required": ["query"]
-            }),
-        },
-        McpToolDefinition {
-            name: "document_get".to_string(),
-            description: "Get document metadata or retrieve the full text content of a specific page. Use 'page' parameter to read page content.".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "document_id": {
-                        "type": "string",
-                        "description": "The document ID (get from document_search results)"
-                    },
-                    "page": {
-                        "type": "integer",
-                        "description": "Page number to retrieve. If specified, returns the full text content of that page. If omitted, returns document metadata only."
-                    }
-                },
-                "required": ["document_id"]
-            }),
-        },
-        McpToolDefinition {
-            name: "traveller_uwp_parse".to_string(),
-            description:
-                "Parse a Traveller UWP (Universal World Profile) string into detailed world data"
-                    .to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "uwp": {
-                        "type": "string",
-                        "description": "UWP string (e.g., 'A867949-C')"
-                    }
-                },
-                "required": ["uwp"]
-            }),
-        },
-        McpToolDefinition {
-            name: "traveller_jump_calc".to_string(),
-            description: "Calculate jump drive fuel requirements and time".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "distance_parsecs": {
-                        "type": "integer",
-                        "description": "Distance in parsecs"
-                    },
-                    "ship_jump_rating": {
-                        "type": "integer",
-                        "description": "Ship's jump drive rating (1-6)"
-                    },
-                    "ship_tonnage": {
-                        "type": "integer",
-                        "description": "Ship's total tonnage"
-                    }
-                },
-                "required": ["distance_parsecs", "ship_jump_rating", "ship_tonnage"]
-            }),
-        },
-        McpToolDefinition {
-            name: "traveller_skill_lookup".to_string(),
-            description:
-                "Look up a Traveller skill's description, characteristic, and specialities"
-                    .to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "skill_name": {
-                        "type": "string",
-                        "description": "Name of the skill"
-                    },
-                    "speciality": {
-                        "type": "string",
-                        "description": "Optional speciality"
-                    }
-                },
-                "required": ["skill_name"]
-            }),
-        },
-    ];
-
-    Ok(serde_json::json!({ "tools": tools }))
-}
-
-async fn handle_tool_call(
-    state: &McpState,
-    params: Option<serde_json::Value>,
-) -> Result<serde_json::Value, McpError> {
-    let params = params.ok_or_else(|| McpError {
-        code: -32602,
-        message: "Missing params".to_string(),
-    })?;
-
-    let name = params
-        .get("name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| McpError {
-            code: -32602,
-            message: "Missing tool name".to_string(),
-        })?;
-
-    let arguments = params
-        .get("arguments")
-        .cloned()
-        .unwrap_or(serde_json::json!({}));
-
-    // MCP clients have GM access (role=4) since MCP has no user context
-    let gm_role = 4u8;
-
-    let result = match name {
-        "document_search" => {
-            let query = arguments
-                .get("query")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let tags: Vec<String> = arguments
-                .get("tags")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let limit = arguments
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(10) as usize;
-
-            let filters = if tags.is_empty() {
-                None
-            } else {
-                Some(SearchFilters {
-                    tags,
-                    tags_match: TagMatch::Any,
-                })
-            };
-
-            match state.service.search(query, gm_role, limit, filters).await {
-                Ok(results) => {
-                    let formatted =
-                        format_search_results_for_llm(&results, &state.service.i18n, "en");
-                    serde_json::json!({
-                        "content": [{
-                            "type": "text",
-                            "text": formatted
-                        }]
-                    })
-                }
-                Err(e) => {
-                    return Err(McpError {
-                        code: -32000,
-                        message: e.to_string(),
-                    });
-                }
-            }
-        }
-        "document_search_text" => {
-            let query = arguments
-                .get("query")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let section = arguments.get("section").and_then(|v| v.as_str());
-            let document_id = arguments.get("document_id").and_then(|v| v.as_str());
-            let limit = arguments
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(10) as usize;
-
-            match state
-                .service
-                .db
-                .search_chunks_fts(query, section, document_id, gm_role, limit)
-            {
-                Ok(chunks) => {
-                    let results: Vec<serde_json::Value> = chunks
-                        .into_iter()
-                        .map(|c| {
-                            serde_json::json!({
-                                "document_id": c.document_id,
-                                "page_number": c.page_number,
-                                "section_title": c.section_title,
-                                "content": c.content,
-                            })
-                        })
-                        .collect();
-
-                    let text = if results.is_empty() {
-                        format!("No matches found for '{}'", query)
-                    } else {
-                        serde_json::to_string_pretty(&results).unwrap_or_default()
-                    };
-
-                    serde_json::json!({
-                        "content": [{
-                            "type": "text",
-                            "text": text
-                        }]
-                    })
-                }
-                Err(e) => {
-                    return Err(McpError {
-                        code: -32000,
-                        message: e.to_string(),
-                    });
-                }
-            }
-        }
-        "document_get" => {
-            let doc_id = arguments
-                .get("document_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            let page_number = arguments
-                .get("page")
-                .and_then(|v| v.as_i64())
-                .map(|p| p as i32);
-
-            if let Some(page) = page_number {
-                // Get all chunks for the specified page
-                match state.service.db.get_chunks_by_page(doc_id, page, gm_role) {
-                    Ok(chunks) => {
-                        if chunks.is_empty() {
-                            return Err(McpError {
-                                code: -32000,
-                                message: format!(
-                                    "No content found for page {} of document {}",
-                                    page, doc_id
-                                ),
-                            });
-                        }
-
-                        // Concatenate all chunk content for the page
-                        let page_content: String = chunks
-                            .iter()
-                            .map(|c| c.content.as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n\n");
-
-                        serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": page_content
-                            }]
-                        })
-                    }
-                    Err(e) => {
-                        return Err(McpError {
-                            code: -32000,
-                            message: e.to_string(),
-                        });
-                    }
-                }
-            } else {
-                // No page specified - return document metadata
-                match state.service.db.get_document(doc_id) {
-                    Ok(Some(doc)) => {
-                        if doc.access_level.accessible_by(gm_role) {
-                            serde_json::json!({
-                                "content": [{
-                                    "type": "text",
-                                    "text": format!(
-                                        "Document: {}\nID: {}\nTags: {:?}\nChunks: {}\nImages: {}\n\nUse the 'page' parameter to retrieve content from a specific page.",
-                                        doc.title, doc.id, doc.tags, doc.chunk_count, doc.image_count
-                                    )
-                                }]
-                            })
-                        } else {
-                            return Err(McpError {
-                                code: -32000,
-                                message: "Access denied".to_string(),
-                            });
-                        }
-                    }
-                    Ok(None) => {
-                        return Err(McpError {
-                            code: -32000,
-                            message: "Document not found".to_string(),
-                        });
-                    }
-                    Err(e) => {
-                        return Err(McpError {
-                            code: -32000,
-                            message: e.to_string(),
-                        });
-                    }
-                }
-            }
-        }
-        "traveller_uwp_parse" => {
-            let uwp = arguments.get("uwp").and_then(|v| v.as_str()).unwrap_or("");
-            let tool = TravellerTool::ParseUwp {
-                uwp: uwp.to_string(),
-            };
-
-            match tool.execute() {
-                Ok(result) => serde_json::json!({
-                    "content": [{
-                        "type": "text",
-                        "text": serde_json::to_string_pretty(&result).unwrap_or_default()
-                    }]
-                }),
-                Err(e) => {
-                    return Err(McpError {
-                        code: -32000,
-                        message: e,
-                    });
-                }
-            }
-        }
-        "traveller_jump_calc" => {
-            let distance = arguments
-                .get("distance_parsecs")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(1) as u8;
-            let rating = arguments
-                .get("ship_jump_rating")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(1) as u8;
-            let tonnage = arguments
-                .get("ship_tonnage")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(100) as u32;
-
-            let tool = TravellerTool::JumpCalculation {
-                distance_parsecs: distance,
-                ship_jump_rating: rating,
-                ship_tonnage: tonnage,
-            };
-
-            match tool.execute() {
-                Ok(result) => serde_json::json!({
-                    "content": [{
-                        "type": "text",
-                        "text": serde_json::to_string_pretty(&result).unwrap_or_default()
-                    }]
-                }),
-                Err(e) => {
-                    return Err(McpError {
-                        code: -32000,
-                        message: e,
-                    });
-                }
-            }
-        }
-        "traveller_skill_lookup" => {
-            let skill = arguments
-                .get("skill_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let speciality = arguments
-                .get("speciality")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            let tool = TravellerTool::SkillLookup {
-                skill_name: skill.to_string(),
-                speciality,
-            };
-
-            match tool.execute() {
-                Ok(result) => serde_json::json!({
-                    "content": [{
-                        "type": "text",
-                        "text": serde_json::to_string_pretty(&result).unwrap_or_default()
-                    }]
-                }),
-                Err(e) => {
-                    return Err(McpError {
-                        code: -32000,
-                        message: e,
-                    });
-                }
-            }
-        }
-        _ => {
-            return Err(McpError {
-                code: -32601,
-                message: format!("Unknown tool: {}", name),
-            });
-        }
-    };
-
-    Ok(result)
-}
-
-// MCP Protocol Types
+// === MCP Protocol Types ===
 
 #[derive(Debug, Serialize, Deserialize)]
-struct McpRequest {
-    jsonrpc: String,
-    id: serde_json::Value,
-    method: String,
+pub(crate) struct McpRequest {
+    pub jsonrpc: String,
+    pub id: serde_json::Value,
+    pub method: String,
     #[serde(default)]
-    params: Option<serde_json::Value>,
+    pub params: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
-struct McpResponse {
-    jsonrpc: String,
-    id: serde_json::Value,
+pub(crate) struct McpResponse {
+    pub jsonrpc: String,
+    pub id: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<serde_json::Value>,
+    pub result: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<McpError>,
+    pub error: Option<McpError>,
 }
 
 #[derive(Debug, Serialize)]
-struct McpError {
-    code: i32,
-    message: String,
+pub(crate) struct McpError {
+    pub code: i32,
+    pub message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -613,8 +173,8 @@ struct McpImplementation {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct McpToolDefinition {
-    name: String,
-    description: String,
-    input_schema: serde_json::Value,
+pub(crate) struct McpToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
 }
