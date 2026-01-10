@@ -728,6 +728,58 @@ impl SeneschalService {
                     Err(e) => ToolResult::error(call.id.clone(), e.to_string()),
                 }
             }
+            "document_search_text" => {
+                let query = call
+                    .args
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let section = call.args.get("section").and_then(|v| v.as_str());
+                let document_id = call.args.get("document_id").and_then(|v| v.as_str());
+                let limit = call
+                    .args
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(10) as usize;
+
+                match self.db.search_chunks_fts(
+                    query,
+                    section,
+                    document_id,
+                    user_context.role,
+                    limit,
+                ) {
+                    Ok(chunks) => {
+                        let results: Vec<serde_json::Value> = chunks
+                            .into_iter()
+                            .map(|c| {
+                                serde_json::json!({
+                                    "document_id": c.document_id,
+                                    "page_number": c.page_number,
+                                    "section_title": c.section_title,
+                                    "content": c.content,
+                                })
+                            })
+                            .collect();
+
+                        if results.is_empty() {
+                            ToolResult::success(
+                                call.id.clone(),
+                                serde_json::json!({
+                                    "results": [],
+                                    "message": format!("No matches found for '{}'", query)
+                                }),
+                            )
+                        } else {
+                            ToolResult::success(
+                                call.id.clone(),
+                                serde_json::json!({ "results": results }),
+                            )
+                        }
+                    }
+                    Err(e) => ToolResult::error(call.id.clone(), e.to_string()),
+                }
+            }
             "document_get" => {
                 let doc_id = call
                     .args
@@ -735,21 +787,70 @@ impl SeneschalService {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                match self.db.get_chunk(doc_id) {
-                    Ok(Some(chunk)) => {
-                        if chunk.access_level.accessible_by(user_context.role) {
-                            ToolResult::success(
-                                call.id.clone(),
-                                serde_json::to_value(&chunk).unwrap_or_default(),
-                            )
-                        } else {
-                            ToolResult::error(call.id.clone(), "Access denied".to_string())
+                let page_number = call
+                    .args
+                    .get("page")
+                    .and_then(|v| v.as_i64())
+                    .map(|p| p as i32);
+
+                if let Some(page) = page_number {
+                    // Get all chunks for the specified page
+                    match self.db.get_chunks_by_page(doc_id, page, user_context.role) {
+                        Ok(chunks) => {
+                            if chunks.is_empty() {
+                                ToolResult::error(
+                                    call.id.clone(),
+                                    format!(
+                                        "No content found for page {} of document {}",
+                                        page, doc_id
+                                    ),
+                                )
+                            } else {
+                                // Concatenate all chunk content for the page
+                                let page_content: String = chunks
+                                    .iter()
+                                    .map(|c| c.content.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("\n\n");
+
+                                ToolResult::success(
+                                    call.id.clone(),
+                                    serde_json::json!({
+                                        "document_id": doc_id,
+                                        "page": page,
+                                        "content": page_content,
+                                        "chunk_count": chunks.len()
+                                    }),
+                                )
+                            }
                         }
+                        Err(e) => ToolResult::error(call.id.clone(), e.to_string()),
                     }
-                    Ok(None) => {
-                        ToolResult::error(call.id.clone(), "Document not found".to_string())
+                } else {
+                    // No page specified - return document metadata
+                    match self.db.get_document(doc_id) {
+                        Ok(Some(doc)) => {
+                            if doc.access_level.accessible_by(user_context.role) {
+                                ToolResult::success(
+                                    call.id.clone(),
+                                    serde_json::json!({
+                                        "id": doc.id,
+                                        "title": doc.title,
+                                        "tags": doc.tags,
+                                        "chunk_count": doc.chunk_count,
+                                        "image_count": doc.image_count,
+                                        "note": "Use the 'page' parameter to retrieve content from a specific page"
+                                    }),
+                                )
+                            } else {
+                                ToolResult::error(call.id.clone(), "Access denied".to_string())
+                            }
+                        }
+                        Ok(None) => {
+                            ToolResult::error(call.id.clone(), "Document not found".to_string())
+                        }
+                        Err(e) => ToolResult::error(call.id.clone(), e.to_string()),
                     }
-                    Err(e) => ToolResult::error(call.id.clone(), e.to_string()),
                 }
             }
             "document_list" => {

@@ -564,7 +564,7 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
                 name: "document_search".to_string(),
-                description: "Search game documents (rulebooks, scenarios) for information. Returns relevant text chunks.".to_string(),
+                description: "Search game documents (rulebooks, scenarios) for information using semantic similarity. Good for conceptual queries like 'how do jump drives work' or 'rules for combat'. Returns relevant text chunks.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -589,18 +589,47 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
         OllamaToolDefinition {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
+                name: "document_search_text".to_string(),
+                description: "Search documents using exact keyword matching. Use this for specific names, terms, or when semantic search doesn't find what you need. Supports filtering by section (e.g., 'Adventure 1'). Good for finding specific characters like 'Anders Casarii' or references within a particular section.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Keywords to search for (exact matching)"
+                        },
+                        "section": {
+                            "type": "string",
+                            "description": "Optional: filter to content within this section (e.g., 'Adventure 1')"
+                        },
+                        "document_id": {
+                            "type": "string",
+                            "description": "Optional: limit search to a specific document"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of results (default 10)"
+                        }
+                    },
+                    "required": ["query"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
                 name: "document_get".to_string(),
-                description: "Get a specific document or page by ID.".to_string(),
+                description: "Get document metadata or retrieve the full text content of a specific page. Use 'page' parameter to read page content - this is the primary way to read specific pages from rulebooks and scenarios.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "document_id": {
                             "type": "string",
-                            "description": "The document ID"
+                            "description": "The document ID (get from document_list or document_find)"
                         },
                         "page": {
                             "type": "integer",
-                            "description": "Optional specific page number"
+                            "description": "Page number to retrieve. If specified, returns the full text content of that page. If omitted, returns document metadata only."
                         }
                     },
                     "required": ["document_id"]
@@ -1733,6 +1762,7 @@ pub fn classify_tool(tool_name: &str) -> ToolLocation {
     match tool_name {
         // Internal tools - executed by the backend
         "document_search"
+        | "document_search_text"
         | "document_get"
         | "document_list"
         | "document_find"

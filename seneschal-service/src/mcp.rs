@@ -115,7 +115,7 @@ async fn handle_tools_list(_state: &McpState) -> Result<serde_json::Value, McpEr
     let tools = vec![
         McpToolDefinition {
             name: "document_search".to_string(),
-            description: "Search game documents (rulebooks, scenarios) for information".to_string(),
+            description: "Search game documents (rulebooks, scenarios) using semantic similarity. Good for conceptual queries like 'how do jump drives work'.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -137,18 +137,44 @@ async fn handle_tools_list(_state: &McpState) -> Result<serde_json::Value, McpEr
             }),
         },
         McpToolDefinition {
+            name: "document_search_text".to_string(),
+            description: "Search documents using exact keyword matching. Use for specific names, terms, or when semantic search doesn't find what you need. Supports section filtering.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Keywords to search for (exact matching)"
+                    },
+                    "section": {
+                        "type": "string",
+                        "description": "Optional: filter to content within this section (e.g., 'Adventure 1')"
+                    },
+                    "document_id": {
+                        "type": "string",
+                        "description": "Optional: limit search to a specific document"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results (default 10)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
+        McpToolDefinition {
             name: "document_get".to_string(),
-            description: "Get a specific document or page by ID".to_string(),
+            description: "Get document metadata or retrieve the full text content of a specific page. Use 'page' parameter to read page content.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "document_id": {
                         "type": "string",
-                        "description": "The document ID"
+                        "description": "The document ID (get from document_search results)"
                     },
                     "page": {
                         "type": "integer",
-                        "description": "Optional specific page number"
+                        "description": "Page number to retrieve. If specified, returns the full text content of that page. If omitted, returns document metadata only."
                     }
                 },
                 "required": ["document_id"]
@@ -290,39 +316,136 @@ async fn handle_tool_call(
                 }
             }
         }
-        "document_get" => {
-            let doc_id = arguments
-                .get("document_id")
+        "document_search_text" => {
+            let query = arguments
+                .get("query")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            let section = arguments.get("section").and_then(|v| v.as_str());
+            let document_id = arguments.get("document_id").and_then(|v| v.as_str());
+            let limit = arguments
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(10) as usize;
 
-            match state.service.db.get_chunk(doc_id) {
-                Ok(Some(chunk)) => {
-                    if chunk.access_level.accessible_by(gm_role) {
-                        serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": chunk.content
-                            }]
+            match state
+                .service
+                .db
+                .search_chunks_fts(query, section, document_id, gm_role, limit)
+            {
+                Ok(chunks) => {
+                    let results: Vec<serde_json::Value> = chunks
+                        .into_iter()
+                        .map(|c| {
+                            serde_json::json!({
+                                "document_id": c.document_id,
+                                "page_number": c.page_number,
+                                "section_title": c.section_title,
+                                "content": c.content,
+                            })
                         })
+                        .collect();
+
+                    let text = if results.is_empty() {
+                        format!("No matches found for '{}'", query)
                     } else {
-                        return Err(McpError {
-                            code: -32000,
-                            message: "Access denied".to_string(),
-                        });
-                    }
-                }
-                Ok(None) => {
-                    return Err(McpError {
-                        code: -32000,
-                        message: "Document not found".to_string(),
-                    });
+                        serde_json::to_string_pretty(&results).unwrap_or_default()
+                    };
+
+                    serde_json::json!({
+                        "content": [{
+                            "type": "text",
+                            "text": text
+                        }]
+                    })
                 }
                 Err(e) => {
                     return Err(McpError {
                         code: -32000,
                         message: e.to_string(),
                     });
+                }
+            }
+        }
+        "document_get" => {
+            let doc_id = arguments
+                .get("document_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let page_number = arguments
+                .get("page")
+                .and_then(|v| v.as_i64())
+                .map(|p| p as i32);
+
+            if let Some(page) = page_number {
+                // Get all chunks for the specified page
+                match state.service.db.get_chunks_by_page(doc_id, page, gm_role) {
+                    Ok(chunks) => {
+                        if chunks.is_empty() {
+                            return Err(McpError {
+                                code: -32000,
+                                message: format!(
+                                    "No content found for page {} of document {}",
+                                    page, doc_id
+                                ),
+                            });
+                        }
+
+                        // Concatenate all chunk content for the page
+                        let page_content: String = chunks
+                            .iter()
+                            .map(|c| c.content.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+
+                        serde_json::json!({
+                            "content": [{
+                                "type": "text",
+                                "text": page_content
+                            }]
+                        })
+                    }
+                    Err(e) => {
+                        return Err(McpError {
+                            code: -32000,
+                            message: e.to_string(),
+                        });
+                    }
+                }
+            } else {
+                // No page specified - return document metadata
+                match state.service.db.get_document(doc_id) {
+                    Ok(Some(doc)) => {
+                        if doc.access_level.accessible_by(gm_role) {
+                            serde_json::json!({
+                                "content": [{
+                                    "type": "text",
+                                    "text": format!(
+                                        "Document: {}\nID: {}\nTags: {:?}\nChunks: {}\nImages: {}\n\nUse the 'page' parameter to retrieve content from a specific page.",
+                                        doc.title, doc.id, doc.tags, doc.chunk_count, doc.image_count
+                                    )
+                                }]
+                            })
+                        } else {
+                            return Err(McpError {
+                                code: -32000,
+                                message: "Access denied".to_string(),
+                            });
+                        }
+                    }
+                    Ok(None) => {
+                        return Err(McpError {
+                            code: -32000,
+                            message: "Document not found".to_string(),
+                        });
+                    }
+                    Err(e) => {
+                        return Err(McpError {
+                            code: -32000,
+                            message: e.to_string(),
+                        });
+                    }
                 }
             }
         }

@@ -274,6 +274,63 @@ impl Database {
             })?;
         }
 
+        // Migration: Add FTS5 virtual table for full-text search
+        let has_chunks_fts: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='chunks_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+            > 0;
+
+        if !has_chunks_fts {
+            conn.execute_batch(
+                r#"
+                -- FTS5 virtual table for full-text search on chunks
+                CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+                    content,
+                    section_title,
+                    document_id UNINDEXED,
+                    chunk_id UNINDEXED,
+                    page_number UNINDEXED,
+                    content='chunks',
+                    content_rowid='rowid'
+                );
+
+                -- Triggers to keep FTS in sync with chunks table
+                CREATE TRIGGER IF NOT EXISTS chunks_fts_ai AFTER INSERT ON chunks BEGIN
+                    INSERT INTO chunks_fts(rowid, content, section_title, document_id, chunk_id, page_number)
+                    VALUES (new.rowid, new.content, new.section_title, new.document_id, new.id, new.page_number);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS chunks_fts_ad AFTER DELETE ON chunks BEGIN
+                    INSERT INTO chunks_fts(chunks_fts, rowid, content, section_title, document_id, chunk_id, page_number)
+                    VALUES ('delete', old.rowid, old.content, old.section_title, old.document_id, old.id, old.page_number);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS chunks_fts_au AFTER UPDATE ON chunks BEGIN
+                    INSERT INTO chunks_fts(chunks_fts, rowid, content, section_title, document_id, chunk_id, page_number)
+                    VALUES ('delete', old.rowid, old.content, old.section_title, old.document_id, old.id, old.page_number);
+                    INSERT INTO chunks_fts(rowid, content, section_title, document_id, chunk_id, page_number)
+                    VALUES (new.rowid, new.content, new.section_title, new.document_id, new.id, new.page_number);
+                END;
+                "#,
+            )
+            .map_err(|e| DatabaseError::Migration {
+                message: format!("Failed to create FTS5 table: {}", e),
+            })?;
+
+            // Populate FTS index from existing chunks
+            conn.execute(
+                "INSERT INTO chunks_fts(rowid, content, section_title, document_id, chunk_id, page_number) SELECT rowid, content, section_title, document_id, id, page_number FROM chunks",
+                [],
+            )
+            .map_err(|e| DatabaseError::Migration {
+                message: format!("Failed to populate FTS5 index: {}", e),
+            })?;
+        }
+
         Ok(())
     }
 
@@ -481,33 +538,117 @@ impl Database {
         Ok(())
     }
 
-    /// Get chunk by ID
-    pub fn get_chunk(&self, id: &str) -> ServiceResult<Option<Chunk>> {
+    /// Get all chunks for a specific page of a document
+    pub fn get_chunks_by_page(
+        &self,
+        document_id: &str,
+        page_number: i32,
+        max_access_level: u8,
+    ) -> ServiceResult<Vec<Chunk>> {
         let conn = self.conn.lock().unwrap();
 
-        let chunk = conn
-            .query_row(
-                "SELECT id, document_id, content, chunk_index, page_number, section_title, access_level, metadata, created_at FROM chunks WHERE id = ?1",
-                params![id],
-                |row| Chunk::from_row(row, vec![]),
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT id, document_id, content, chunk_index, page_number, section_title,
+                       access_level, metadata, created_at
+                FROM chunks
+                WHERE document_id = ?1 AND page_number = ?2 AND access_level <= ?3
+                ORDER BY chunk_index
+                "#,
             )
-            .optional()
             .map_err(DatabaseError::Query)?;
 
-        if let Some(mut chunk) = chunk {
-            // Load tags
-            let mut stmt = conn
+        let chunks: Vec<Chunk> = stmt
+            .query_map(params![document_id, page_number, max_access_level], |row| {
+                Chunk::from_row(row, vec![])
+            })
+            .map_err(DatabaseError::Query)?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(chunks)
+    }
+
+    /// Search chunks using full-text search (FTS5)
+    pub fn search_chunks_fts(
+        &self,
+        query: &str,
+        section_filter: Option<&str>,
+        document_id: Option<&str>,
+        max_access_level: u8,
+        limit: usize,
+    ) -> ServiceResult<Vec<Chunk>> {
+        let conn = self.conn.lock().unwrap();
+
+        // Build the FTS query - escape special characters
+        let fts_query = query
+            .split_whitespace()
+            .map(|word| format!("\"{}\"", word.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // Build the SQL query with optional filters
+        let mut sql = String::from(
+            r#"
+            SELECT c.id, c.document_id, c.content, c.chunk_index, c.page_number,
+                   c.section_title, c.access_level, c.metadata, c.created_at
+            FROM chunks c
+            JOIN chunks_fts fts ON c.id = fts.chunk_id
+            WHERE chunks_fts MATCH ?1 AND c.access_level <= ?2
+            "#,
+        );
+
+        let mut param_idx = 3;
+        if section_filter.is_some() {
+            sql.push_str(&format!(
+                " AND c.section_title LIKE '%' || ?{} || '%'",
+                param_idx
+            ));
+            param_idx += 1;
+        }
+        if document_id.is_some() {
+            sql.push_str(&format!(" AND c.document_id = ?{}", param_idx));
+            param_idx += 1;
+        }
+
+        sql.push_str(&format!(" ORDER BY bm25(chunks_fts) LIMIT ?{}", param_idx));
+
+        let mut stmt = conn.prepare(&sql).map_err(DatabaseError::Query)?;
+
+        // Build params
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(fts_query), Box::new(max_access_level)];
+        if let Some(section) = section_filter {
+            params_vec.push(Box::new(section.to_string()));
+        }
+        if let Some(doc_id) = document_id {
+            params_vec.push(Box::new(doc_id.to_string()));
+        }
+        params_vec.push(Box::new(limit as i32));
+
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+
+        let mut chunks: Vec<Chunk> = stmt
+            .query_map(params_refs.as_slice(), |row| Chunk::from_row(row, vec![]))
+            .map_err(DatabaseError::Query)?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Load tags for each chunk
+        for chunk in &mut chunks {
+            let mut tag_stmt = conn
                 .prepare("SELECT tag FROM chunk_tags WHERE chunk_id = ?1")
                 .map_err(DatabaseError::Query)?;
-            chunk.tags = stmt
-                .query_map(params![id], |row| row.get(0))
+            chunk.tags = tag_stmt
+                .query_map(params![chunk.id], |row| row.get(0))
                 .map_err(DatabaseError::Query)?
                 .filter_map(|r| r.ok())
                 .collect();
-            Ok(Some(chunk))
-        } else {
-            Ok(None)
         }
+
+        Ok(chunks)
     }
 
     /// Search chunks by embedding similarity (brute force for now)
