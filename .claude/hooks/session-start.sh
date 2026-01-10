@@ -6,6 +6,9 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
   exit 0
 fi
 
+# Run asynchronously (5 minute timeout)
+echo '{"async": true, "asyncTimeout": 300000}'
+
 echo "Installing project dependencies..."
 
 # Helper to run commands with sudo only if not root
