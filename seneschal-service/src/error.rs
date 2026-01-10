@@ -20,6 +20,7 @@ pub enum ServiceError {
     #[error("Conversation not found: {conversation_id}")]
     ConversationNotFound { conversation_id: String },
 
+    #[allow(dead_code)]
     #[error("Tool call not found: {tool_call_id}")]
     ToolCallNotFound { tool_call_id: String },
 
@@ -41,6 +42,7 @@ pub enum ServiceError {
     #[error("Configuration error: {message}")]
     Config { message: String },
 
+    #[allow(dead_code)]
     #[error("Internal error: {message}")]
     Internal { message: String },
 }

@@ -3,7 +3,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -15,13 +15,15 @@ use crate::db::{
 use crate::error::{ServiceError, ServiceResult};
 use crate::i18n::I18n;
 use crate::ingestion::IngestionService;
-use crate::ollama::{ChatMessage, ChatRequest, OllamaClient, StreamEvent};
+use crate::ollama::{
+    ChatMessage, ChatRequest, OllamaClient, OllamaFunctionCall, OllamaToolCall, StreamEvent,
+};
 use crate::search::{SearchResult, SearchService, format_search_results_for_llm};
 use crate::tools::{
     AccessLevel, SearchFilters, TagMatch, ToolCall, ToolLocation, ToolResult, TravellerTool,
     classify_tool,
 };
-use crate::websocket::{DocumentProgressUpdate, WebSocketManager};
+use crate::websocket::{DocumentProgressUpdate, ServerMessage, WebSocketManager};
 
 /// Main service coordinator
 pub struct SeneschalService {
@@ -33,6 +35,10 @@ pub struct SeneschalService {
     pub i18n: Arc<I18n>,
     pub active_requests: Arc<DashMap<String, ActiveRequest>>,
     pub ws_manager: Arc<WebSocketManager>,
+    /// Senders for tool results, keyed by conversation_id
+    tool_result_senders: Arc<DashMap<String, oneshot::Sender<serde_json::Value>>>,
+    /// Senders for continue signals, keyed by conversation_id
+    continue_senders: Arc<DashMap<String, oneshot::Sender<()>>>,
 }
 
 impl SeneschalService {
@@ -86,106 +92,66 @@ impl SeneschalService {
             i18n,
             active_requests: Arc::new(DashMap::new()),
             ws_manager,
+            tool_result_senders: Arc::new(DashMap::new()),
+            continue_senders: Arc::new(DashMap::new()),
         })
     }
 
-    /// Process a chat request
-    pub async fn chat(&self, request: ChatApiRequest) -> ServiceResult<mpsc::Receiver<SSEEvent>> {
-        let (tx, rx) = mpsc::channel(100);
-
-        let conversation_id = request
-            .conversation_id
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
-
-        // Create or load conversation
-        let mut conversation = self
-            .db
-            .get_conversation(&conversation_id)?
-            .unwrap_or_else(|| Conversation {
-                id: conversation_id.clone(),
-                user_id: request.user_context.user_id.clone(),
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-                messages: vec![],
-                metadata: Some(ConversationMetadata::default()),
-            });
-
-        // Add user messages to conversation
-        for msg in &request.messages {
-            let role = match msg.role.as_str() {
-                "user" => MessageRole::User,
-                "assistant" => MessageRole::Assistant,
-                "system" => MessageRole::System,
-                "tool" => MessageRole::Tool,
-                _ => MessageRole::User,
-            };
-            conversation.messages.push(ConversationMessage {
-                role,
-                content: msg.content.clone(),
-                timestamp: Utc::now(),
-                tool_calls: None,
-                tool_results: None,
-            });
-        }
-
-        // Create active request
-        let active_request = ActiveRequest {
-            user_context: request.user_context.clone(),
-            messages: conversation.messages.clone(),
-            tool_calls_made: 0,
-            pending_external_tool: None,
-            paused: false,
-            started_at: Instant::now(),
-        };
-
-        self.active_requests
-            .insert(conversation_id.clone(), active_request);
-
-        // Spawn the agentic loop
-        let service = self.clone_for_task();
-        let conv_id = conversation_id.clone();
-        let user_ctx = request.user_context.clone();
-        let model = request.model;
-        let tools = request.tools;
-
-        tokio::spawn(async move {
-            service
-                .run_agentic_loop(conv_id, user_ctx, model, tools, tx)
-                .await;
-        });
-
-        Ok(rx)
-    }
-
-    /// Run the agentic loop
-    async fn run_agentic_loop(
+    /// Run the agentic loop with WebSocket output
+    async fn run_agentic_loop_ws(
         &self,
         conversation_id: String,
         user_context: UserContext,
         model: Option<String>,
         enabled_tools: Option<Vec<String>>,
-        tx: mpsc::Sender<SSEEvent>,
+        session_id: String,
+        ws_manager: Arc<WebSocketManager>,
     ) {
         let loop_config = &self.config.agentic_loop;
+
+        // Get model's context length (do this once at the start)
+        let model_name = model
+            .as_deref()
+            .unwrap_or(&self.config.ollama.default_model);
+        let context_length = self.ollama.get_model_context_length(model_name).await;
+        debug!(
+            model = %model_name,
+            context_length = ?context_length,
+            "Fetched model context length"
+        );
 
         loop {
             // Check if we should stop
             let active_request = match self.active_requests.get(&conversation_id) {
                 Some(r) => r.clone(),
                 None => {
-                    debug!("Active request not found, stopping loop");
+                    debug!(
+                        conversation_id = %conversation_id,
+                        "Active request not found, stopping loop"
+                    );
                     break;
                 }
             };
 
+            debug!(
+                conversation_id = %conversation_id,
+                tool_calls_made = active_request.tool_calls_made,
+                paused = active_request.paused,
+                pending_external_tool = active_request.pending_external_tool.is_some(),
+                message_count = active_request.messages.len(),
+                "WebSocket agentic loop iteration starting"
+            );
+
             // Check hard timeout
             if active_request.started_at.elapsed() > loop_config.hard_timeout() {
-                let _ = tx
-                    .send(SSEEvent::Error {
+                ws_manager.send_to(
+                    &session_id,
+                    ServerMessage::ChatError {
+                        conversation_id: conversation_id.clone(),
                         message: self.i18n.get("en", "error-timeout", None),
                         recoverable: false,
-                    })
-                    .await;
+                    },
+                );
                 break;
             }
 
@@ -193,13 +159,22 @@ impl SeneschalService {
             if active_request.tool_calls_made >= loop_config.tool_call_pause_threshold
                 && !active_request.paused
             {
+                info!(
+                    conversation_id = %conversation_id,
+                    tool_calls_made = active_request.tool_calls_made,
+                    threshold = loop_config.tool_call_pause_threshold,
+                    "Tool call limit reached, pausing loop"
+                );
+
                 self.active_requests
                     .entry(conversation_id.clone())
                     .and_modify(|r| r.paused = true);
 
-                let _ = tx
-                    .send(SSEEvent::Pause {
-                        reason: PauseReason::ToolLimit,
+                ws_manager.send_to(
+                    &session_id,
+                    ServerMessage::ChatPaused {
+                        conversation_id: conversation_id.clone(),
+                        reason: "tool_limit".to_string(),
                         tool_calls_made: active_request.tool_calls_made,
                         elapsed_seconds: active_request.started_at.elapsed().as_secs(),
                         message: self.i18n.format(
@@ -207,13 +182,23 @@ impl SeneschalService {
                             "chat-pause-tool-limit",
                             &[("count", &active_request.tool_calls_made.to_string())],
                         ),
-                    })
-                    .await;
+                    },
+                );
 
-                // Wait for continue signal or timeout
-                // For now, we'll just stop. In a real implementation,
-                // we'd wait for POST /api/chat/continue
-                break;
+                // Wait for continue signal
+                let (tx, rx) = oneshot::channel();
+                self.continue_senders.insert(conversation_id.clone(), tx);
+
+                match tokio::time::timeout(loop_config.hard_timeout(), rx).await {
+                    Ok(Ok(())) => {
+                        debug!(conversation_id = %conversation_id, "Continue signal received");
+                        continue;
+                    }
+                    _ => {
+                        debug!(conversation_id = %conversation_id, "Continue timeout or cancelled");
+                        break;
+                    }
+                }
             }
 
             if active_request.started_at.elapsed() > loop_config.time_pause_threshold()
@@ -224,9 +209,11 @@ impl SeneschalService {
                     .and_modify(|r| r.paused = true);
 
                 let elapsed = active_request.started_at.elapsed().as_secs();
-                let _ = tx
-                    .send(SSEEvent::Pause {
-                        reason: PauseReason::TimeLimit,
+                ws_manager.send_to(
+                    &session_id,
+                    ServerMessage::ChatPaused {
+                        conversation_id: conversation_id.clone(),
+                        reason: "time_limit".to_string(),
                         tool_calls_made: active_request.tool_calls_made,
                         elapsed_seconds: elapsed,
                         message: self.i18n.format(
@@ -234,13 +221,24 @@ impl SeneschalService {
                             "chat-pause-time-limit",
                             &[("seconds", &elapsed.to_string())],
                         ),
-                    })
-                    .await;
-                break;
-            }
+                    },
+                );
 
-            // Send thinking indicator
-            let _ = tx.send(SSEEvent::Thinking).await;
+                // Wait for continue signal
+                let (tx, rx) = oneshot::channel();
+                self.continue_senders.insert(conversation_id.clone(), tx);
+
+                match tokio::time::timeout(loop_config.hard_timeout(), rx).await {
+                    Ok(Ok(())) => {
+                        debug!(conversation_id = %conversation_id, "Continue signal received");
+                        continue;
+                    }
+                    _ => {
+                        debug!(conversation_id = %conversation_id, "Continue timeout or cancelled");
+                        break;
+                    }
+                }
+            }
 
             // Build messages for Ollama
             let ollama_messages = self.build_ollama_messages(&active_request, &user_context);
@@ -262,7 +260,7 @@ impl SeneschalService {
                 model: model.clone(),
                 messages: ollama_messages,
                 temperature: None,
-                num_ctx: None,
+                num_ctx: context_length,
                 enable_tools: tools_enabled,
             };
 
@@ -270,12 +268,14 @@ impl SeneschalService {
                 Ok(s) => s,
                 Err(e) => {
                     error!(error = %e, "Ollama chat failed");
-                    let _ = tx
-                        .send(SSEEvent::Error {
+                    ws_manager.send_to(
+                        &session_id,
+                        ServerMessage::ChatError {
+                            conversation_id: conversation_id.clone(),
                             message: e.to_string(),
                             recoverable: false,
-                        })
-                        .await;
+                        },
+                    );
                     break;
                 }
             };
@@ -283,15 +283,28 @@ impl SeneschalService {
             let mut accumulated_content = String::new();
             let mut tool_calls = Vec::new();
             let mut done = false;
+            let mut final_usage = (None, None);
 
             // Process stream events
             while let Some(event) = stream.recv().await {
                 match event {
                     StreamEvent::Content(text) => {
                         accumulated_content.push_str(&text);
-                        let _ = tx.send(SSEEvent::Content { text }).await;
+                        ws_manager.send_to(
+                            &session_id,
+                            ServerMessage::ChatContent {
+                                conversation_id: conversation_id.clone(),
+                                text,
+                            },
+                        );
                     }
                     StreamEvent::ToolCall(call) => {
+                        debug!(
+                            conversation_id = %conversation_id,
+                            tool_call_id = %call.id,
+                            tool_name = %call.tool,
+                            "Tool call received from LLM"
+                        );
                         tool_calls.push(call);
                     }
                     StreamEvent::Done {
@@ -299,145 +312,33 @@ impl SeneschalService {
                         eval_count,
                         ..
                     } => {
+                        let content_preview: String = accumulated_content.chars().take(500).collect();
+                        debug!(
+                            conversation_id = %conversation_id,
+                            prompt_tokens = ?prompt_eval_count,
+                            completion_tokens = ?eval_count,
+                            tool_call_count = tool_calls.len(),
+                            content_length = accumulated_content.len(),
+                            content_preview = %content_preview,
+                            "LLM response complete"
+                        );
                         done = true;
-                        // If we have tool calls, process them
-                        if !tool_calls.is_empty() {
-                            for call in &tool_calls {
-                                let location = classify_tool(&call.tool);
-
-                                match location {
-                                    ToolLocation::Internal => {
-                                        // Execute internal tool
-                                        let _ = tx
-                                            .send(SSEEvent::ToolStatus {
-                                                message: self.i18n.format(
-                                                    "en",
-                                                    "chat-executing-tool",
-                                                    &[("tool", &call.tool)],
-                                                ),
-                                            })
-                                            .await;
-
-                                        let result =
-                                            self.execute_internal_tool(call, &user_context).await;
-
-                                        // Add tool result to conversation
-                                        self.active_requests.entry(conversation_id.clone()).and_modify(|r| {
-                                            r.tool_calls_made += 1;
-                                            r.messages.push(ConversationMessage {
-                                                role: MessageRole::Tool,
-                                                content: serde_json::to_string(&result).unwrap_or_default(),
-                                                timestamp: Utc::now(),
-                                                tool_calls: None,
-                                                tool_results: Some(vec![ToolResultRecord {
-                                                    tool_call_id: call.id.clone(),
-                                                    result: match &result.outcome {
-                                                        crate::tools::ToolOutcome::Success { result } => result.clone(),
-                                                        crate::tools::ToolOutcome::Error { error } => serde_json::json!({ "error": error }),
-                                                    },
-                                                    error: match &result.outcome {
-                                                        crate::tools::ToolOutcome::Error { error } => Some(error.clone()),
-                                                        _ => None,
-                                                    },
-                                                }]),
-                                            });
-                                        });
-
-                                        let _ = tx
-                                            .send(SSEEvent::ToolResult {
-                                                id: call.id.clone(),
-                                                tool: call.tool.clone(),
-                                                summary: self.i18n.format(
-                                                    "en",
-                                                    "chat-tool-complete",
-                                                    &[("tool", &call.tool)],
-                                                ),
-                                            })
-                                            .await;
-                                    }
-                                    ToolLocation::External => {
-                                        // Request external tool execution from client
-                                        self.active_requests
-                                            .entry(conversation_id.clone())
-                                            .and_modify(|r| {
-                                                r.pending_external_tool = Some(PendingToolCall {
-                                                    id: call.id.clone(),
-                                                    tool: call.tool.clone(),
-                                                    args: call.args.clone(),
-                                                    sent_at: Instant::now(),
-                                                });
-                                                r.tool_calls_made += 1;
-                                            });
-
-                                        let _ = tx
-                                            .send(SSEEvent::ToolCall {
-                                                id: call.id.clone(),
-                                                tool: call.tool.clone(),
-                                                args: call.args.clone(),
-                                            })
-                                            .await;
-
-                                        // Wait for tool result (handled by API endpoint)
-                                        // For now, we'll break and wait for the client
-                                        // In a full implementation, we'd use channels
-                                    }
-                                }
-                            }
-
-                            // If we had tool calls, continue the loop
-                            if !tool_calls
-                                .iter()
-                                .any(|c| classify_tool(&c.tool) == ToolLocation::External)
-                            {
-                                continue;
-                            }
-                        }
-
-                        // No tool calls or external tools pending - we're done
-                        if !accumulated_content.is_empty() {
-                            // Add assistant message to conversation
-                            self.active_requests
-                                .entry(conversation_id.clone())
-                                .and_modify(|r| {
-                                    r.messages.push(ConversationMessage {
-                                        role: MessageRole::Assistant,
-                                        content: accumulated_content.clone(),
-                                        timestamp: Utc::now(),
-                                        tool_calls: if tool_calls.is_empty() {
-                                            None
-                                        } else {
-                                            Some(
-                                                tool_calls
-                                                    .iter()
-                                                    .map(|c| ToolCallRecord {
-                                                        id: c.id.clone(),
-                                                        tool: c.tool.clone(),
-                                                        args: c.args.clone(),
-                                                    })
-                                                    .collect(),
-                                            )
-                                        },
-                                        tool_results: None,
-                                    });
-                                });
-                        }
-
-                        let _ = tx
-                            .send(SSEEvent::Done {
-                                usage: Some(Usage {
-                                    prompt_tokens: prompt_eval_count.unwrap_or(0),
-                                    completion_tokens: eval_count.unwrap_or(0),
-                                }),
-                            })
-                            .await;
+                        final_usage = (prompt_eval_count, eval_count);
                     }
                     StreamEvent::Error(e) => {
-                        let _ = tx
-                            .send(SSEEvent::Error {
+                        warn!(
+                            conversation_id = %conversation_id,
+                            error = %e,
+                            "LLM stream error received"
+                        );
+                        ws_manager.send_to(
+                            &session_id,
+                            ServerMessage::ChatError {
+                                conversation_id: conversation_id.clone(),
                                 message: e,
                                 recoverable: true,
-                            })
-                            .await;
+                            },
+                        );
                         done = true;
                     }
                 }
@@ -447,40 +348,237 @@ impl SeneschalService {
                 }
             }
 
-            // If we got content without tool calls, we're done
-            if !accumulated_content.is_empty() && tool_calls.is_empty() {
-                break;
-            }
-
-            // If we have pending external tools, check for timeout
-            if let Some(req) = self.active_requests.get(&conversation_id)
-                && let Some(ref pending) = req.pending_external_tool
-            {
-                if pending.sent_at.elapsed() > loop_config.external_tool_timeout() {
-                    error!(
-                        tool = %pending.tool,
-                        args = %pending.args,
-                        "External tool call timed out"
-                    );
-                    let _ = tx
-                        .send(SSEEvent::Error {
-                            message: format!(
-                                "External tool '{}' timed out waiting for response",
-                                pending.tool
+            // Process tool calls
+            if !tool_calls.is_empty() {
+                // Add assistant message with tool calls to conversation
+                self.active_requests
+                    .entry(conversation_id.clone())
+                    .and_modify(|r| {
+                        r.messages.push(ConversationMessage {
+                            role: MessageRole::Assistant,
+                            content: accumulated_content.clone(),
+                            timestamp: Utc::now(),
+                            tool_calls: Some(
+                                tool_calls
+                                    .iter()
+                                    .map(|tc| ToolCallRecord {
+                                        id: tc.id.clone(),
+                                        tool: tc.tool.clone(),
+                                        args: tc.args.clone(),
+                                    })
+                                    .collect(),
                             ),
-                            recoverable: false,
-                        })
-                        .await;
-                    break;
+                            tool_results: None,
+                        });
+                    });
+
+                for call in &tool_calls {
+                    let location = classify_tool(&call.tool);
+
+                    match location {
+                        ToolLocation::Internal => {
+                            // Send status update
+                            ws_manager.send_to(
+                                &session_id,
+                                ServerMessage::ChatToolStatus {
+                                    conversation_id: conversation_id.clone(),
+                                    tool_call_id: call.id.clone(),
+                                    message: self.i18n.format(
+                                        "en",
+                                        "chat-executing-tool",
+                                        &[("tool", &call.tool)],
+                                    ),
+                                },
+                            );
+
+                            let result = self.execute_internal_tool(call, &user_context).await;
+
+                            // Log tool result
+                            match &result.outcome {
+                                crate::tools::ToolOutcome::Success { result: res } => {
+                                    debug!(
+                                        conversation_id = %conversation_id,
+                                        tool_call_id = %call.id,
+                                        tool_name = %call.tool,
+                                        result_preview = %format!("{:.200}", res.to_string()),
+                                        "Internal tool execution succeeded"
+                                    );
+                                }
+                                crate::tools::ToolOutcome::Error { error } => {
+                                    warn!(
+                                        conversation_id = %conversation_id,
+                                        tool_call_id = %call.id,
+                                        tool_name = %call.tool,
+                                        error = %error,
+                                        "Internal tool execution failed"
+                                    );
+                                }
+                            }
+
+                            // Add tool result to conversation
+                            self.active_requests
+                                .entry(conversation_id.clone())
+                                .and_modify(|r| {
+                                    r.tool_calls_made += 1;
+                                    r.messages.push(ConversationMessage {
+                                        role: MessageRole::Tool,
+                                        content: serde_json::to_string(&result).unwrap_or_default(),
+                                        timestamp: Utc::now(),
+                                        tool_calls: None,
+                                        tool_results: Some(vec![ToolResultRecord {
+                                            tool_call_id: call.id.clone(),
+                                            result: match &result.outcome {
+                                                crate::tools::ToolOutcome::Success { result } => {
+                                                    result.clone()
+                                                }
+                                                crate::tools::ToolOutcome::Error { error } => {
+                                                    serde_json::json!({ "error": error })
+                                                }
+                                            },
+                                            error: match &result.outcome {
+                                                crate::tools::ToolOutcome::Error { error } => {
+                                                    Some(error.clone())
+                                                }
+                                                _ => None,
+                                            },
+                                        }]),
+                                    });
+                                });
+
+                            ws_manager.send_to(
+                                &session_id,
+                                ServerMessage::ChatToolResult {
+                                    conversation_id: conversation_id.clone(),
+                                    tool_call_id: call.id.clone(),
+                                    tool: call.tool.clone(),
+                                    summary: self.i18n.format(
+                                        "en",
+                                        "chat-tool-complete",
+                                        &[("tool", &call.tool)],
+                                    ),
+                                },
+                            );
+                        }
+                        ToolLocation::External => {
+                            // Request external tool execution from client
+                            debug!(
+                                conversation_id = %conversation_id,
+                                tool_call_id = %call.id,
+                                tool_name = %call.tool,
+                                tool_args = %call.args,
+                                "Sending external tool call to client via WebSocket"
+                            );
+
+                            self.active_requests
+                                .entry(conversation_id.clone())
+                                .and_modify(|r| {
+                                    r.pending_external_tool = Some(PendingToolCall {
+                                        id: call.id.clone(),
+                                        tool: call.tool.clone(),
+                                        args: call.args.clone(),
+                                        sent_at: Instant::now(),
+                                    });
+                                    r.tool_calls_made += 1;
+                                });
+
+                            ws_manager.send_to(
+                                &session_id,
+                                ServerMessage::ChatToolCall {
+                                    conversation_id: conversation_id.clone(),
+                                    id: call.id.clone(),
+                                    tool: call.tool.clone(),
+                                    args: call.args.clone(),
+                                },
+                            );
+
+                            // Wait for tool result via oneshot channel
+                            let (tx, rx) = oneshot::channel();
+                            self.tool_result_senders.insert(conversation_id.clone(), tx);
+
+                            match tokio::time::timeout(loop_config.external_tool_timeout(), rx)
+                                .await
+                            {
+                                Ok(Ok(_result)) => {
+                                    debug!(
+                                        conversation_id = %conversation_id,
+                                        tool_call_id = %call.id,
+                                        "External tool result received"
+                                    );
+                                    // Result is already added to messages by handle_tool_result_ws
+                                }
+                                Ok(Err(_)) => {
+                                    warn!(
+                                        conversation_id = %conversation_id,
+                                        tool_call_id = %call.id,
+                                        "External tool channel closed (client disconnected?)"
+                                    );
+                                    ws_manager.send_to(
+                                        &session_id,
+                                        ServerMessage::ChatError {
+                                            conversation_id: conversation_id.clone(),
+                                            message: "Client disconnected while waiting for tool result".to_string(),
+                                            recoverable: false,
+                                        },
+                                    );
+                                    // Clean up and exit
+                                    self.active_requests.remove(&conversation_id);
+                                    return;
+                                }
+                                Err(_) => {
+                                    error!(
+                                        conversation_id = %conversation_id,
+                                        tool = %call.tool,
+                                        "External tool call timed out"
+                                    );
+                                    ws_manager.send_to(
+                                        &session_id,
+                                        ServerMessage::ChatError {
+                                            conversation_id: conversation_id.clone(),
+                                            message: format!(
+                                                "External tool '{}' timed out waiting for response",
+                                                call.tool
+                                            ),
+                                            recoverable: false,
+                                        },
+                                    );
+                                    // Clean up and exit
+                                    self.active_requests.remove(&conversation_id);
+                                    return;
+                                }
+                            }
+                        }
+                    }
                 }
-                // Wait for external tool result (will be provided via API)
-                break;
+
+                // After processing all tool calls, continue the loop
+                continue;
             }
 
-            // No more work to do
-            if tool_calls.is_empty() {
-                break;
+            // No tool calls - add assistant message and finish
+            if !accumulated_content.is_empty() {
+                self.active_requests
+                    .entry(conversation_id.clone())
+                    .and_modify(|r| {
+                        r.messages.push(ConversationMessage {
+                            role: MessageRole::Assistant,
+                            content: accumulated_content.clone(),
+                            timestamp: Utc::now(),
+                            tool_calls: None,
+                            tool_results: None,
+                        });
+                    });
             }
+
+            // Send turn complete
+            ws_manager.send_to(
+                &session_id,
+                ServerMessage::ChatTurnComplete {
+                    conversation_id: conversation_id.clone(),
+                    prompt_tokens: final_usage.0,
+                    completion_tokens: final_usage.1,
+                },
+            );
+            break;
         }
 
         // Save conversation to database
@@ -488,7 +586,7 @@ impl SeneschalService {
             let conversation = Conversation {
                 id: conversation_id.clone(),
                 user_id: req.user_context.user_id.clone(),
-                created_at: Utc::now(), // Should be preserved from original
+                created_at: Utc::now(),
                 updated_at: Utc::now(),
                 messages: req.messages.clone(),
                 metadata: Some(ConversationMetadata::default()),
@@ -499,17 +597,10 @@ impl SeneschalService {
             }
         }
 
-        // Only clean up active request if there's no pending external tool
-        // If there's a pending external tool, the request will be cleaned up
-        // after the tool result is processed
-        let has_pending_tool = self
-            .active_requests
-            .get(&conversation_id)
-            .is_some_and(|r| r.pending_external_tool.is_some());
-
-        if !has_pending_tool {
-            self.active_requests.remove(&conversation_id);
-        }
+        // Clean up active request
+        self.active_requests.remove(&conversation_id);
+        self.tool_result_senders.remove(&conversation_id);
+        self.continue_senders.remove(&conversation_id);
     }
 
     /// Build Ollama messages from conversation
@@ -520,10 +611,44 @@ impl SeneschalService {
     ) -> Vec<ChatMessage> {
         let mut messages = vec![ChatMessage::system(self.build_system_prompt(user_context))];
 
+        // Log all source messages before building
+        debug!(
+            source_message_count = request.messages.len(),
+            "Building Ollama messages from conversation"
+        );
+        for (i, msg) in request.messages.iter().enumerate() {
+            let tool_call_count = msg.tool_calls.as_ref().map(|tc| tc.len()).unwrap_or(0);
+            debug!(
+                index = i,
+                role = ?msg.role,
+                content_length = msg.content.len(),
+                content_preview = %msg.content.chars().take(100).collect::<String>(),
+                tool_call_count = tool_call_count,
+                "Source message {}", i
+            );
+        }
+
         for msg in &request.messages {
             let chat_msg = match msg.role {
                 MessageRole::User => ChatMessage::user(&msg.content),
-                MessageRole::Assistant => ChatMessage::assistant(&msg.content),
+                MessageRole::Assistant => {
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        ChatMessage::assistant_with_tool_calls(
+                            &msg.content,
+                            tool_calls
+                                .iter()
+                                .map(|tc| OllamaToolCall {
+                                    function: OllamaFunctionCall {
+                                        name: tc.tool.clone(),
+                                        arguments: tc.args.clone(),
+                                    },
+                                })
+                                .collect(),
+                        )
+                    } else {
+                        ChatMessage::assistant(&msg.content)
+                    }
+                }
                 MessageRole::System => ChatMessage::system(&msg.content),
                 MessageRole::Tool => ChatMessage::tool(&msg.content),
             };
@@ -533,42 +658,18 @@ impl SeneschalService {
         messages
     }
 
-    /// Build system prompt
+    /// Build system prompt from template
     fn build_system_prompt(&self, user_context: &UserContext) -> String {
+        const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../prompts/system.txt");
+
         let is_gm = user_context.is_gm();
+        let role_name = if is_gm { "Game Master" } else { "Player" };
+        let character = user_context.character_id.as_deref().unwrap_or("None");
 
-        format!(
-            r#"You are the Seneschal Program, an AI assistant for tabletop roleplaying game masters using Foundry VTT.
-
-User Information:
-- Name: {}
-- Role: {} ({})
-- Character: {}
-
-Your capabilities:
-1. Search and retrieve information from game rulebooks and documents
-2. Read and modify Foundry VTT game data (actors, items, journals, etc.)
-3. Roll dice using FVTT's dice system
-4. Parse and explain game-specific data (like Traveller UWPs)
-
-Guidelines:
-- Be helpful and concise
-- When referencing rules, cite the source (book/page if available)
-- Respect the user's role - {} can only access what they have permission to see
-- Use appropriate tools to look up information rather than guessing
-- For Mongoose Traveller 2e: You understand UWP format, skills, characteristics, and game mechanics
-
-When asked about rules or game content, use document_search to find relevant information before answering.
-"#,
-            user_context.user_name,
-            user_context.role,
-            if is_gm { "Game Master" } else { "Player" },
-            user_context
-                .character_id
-                .as_ref()
-                .unwrap_or(&"None".to_string()),
-            if is_gm { "GMs" } else { "Players" }
-        )
+        SYSTEM_PROMPT_TEMPLATE
+            .replace("{user_name}", &user_context.user_name)
+            .replace("{role_name}", role_name)
+            .replace("{character}", character)
     }
 
     /// Execute an internal tool
@@ -742,9 +843,14 @@ When asked about rules or game content, use document_search to find relevant inf
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                let page = call
+                let start_page = call
                     .args
-                    .get("page")
+                    .get("start_page")
+                    .and_then(|v| v.as_i64())
+                    .map(|p| p as i32);
+                let end_page = call
+                    .args
+                    .get("end_page")
                     .and_then(|v| v.as_i64())
                     .map(|p| p as i32);
                 let limit = call
@@ -755,7 +861,7 @@ When asked about rules or game content, use document_search to find relevant inf
 
                 match self
                     .db
-                    .list_document_images(user_context.role, Some(doc_id), page, limit)
+                    .list_document_images(user_context.role, Some(doc_id), start_page, end_page, limit)
                 {
                     Ok(images) => {
                         let image_list: Vec<_> = images
@@ -1024,33 +1130,129 @@ When asked about rules or game content, use document_search to find relevant inf
         }
     }
 
-    /// Handle external tool result from client and continue the agentic loop
-    pub async fn handle_tool_result(
+    // === WebSocket Chat Methods ===
+
+    /// Start a chat session via WebSocket
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_chat_ws(
+        &self,
+        session_id: String,
+        conversation_id: Option<String>,
+        message: String,
+        model: Option<String>,
+        enabled_tools: Option<Vec<String>>,
+        user_id: String,
+        user_name: Option<String>,
+        role: u8,
+        ws_manager: Arc<WebSocketManager>,
+    ) -> String {
+        let conversation_id = conversation_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+
+        // Create or load conversation
+        let mut conversation = self
+            .db
+            .get_conversation(&conversation_id)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| Conversation {
+                id: conversation_id.clone(),
+                user_id: user_id.clone(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                messages: vec![],
+                metadata: Some(ConversationMetadata::default()),
+            });
+
+        // Add user message to conversation
+        conversation.messages.push(ConversationMessage {
+            role: MessageRole::User,
+            content: message.clone(),
+            timestamp: Utc::now(),
+            tool_calls: None,
+            tool_results: None,
+        });
+
+        // Build user context
+        let user_context = UserContext {
+            user_id,
+            user_name: user_name.unwrap_or_default(),
+            role,
+            owned_actor_ids: vec![],
+            character_id: None,
+        };
+
+        // Create active request
+        let active_request = ActiveRequest {
+            user_context: user_context.clone(),
+            messages: conversation.messages.clone(),
+            tool_calls_made: 0,
+            pending_external_tool: None,
+            paused: false,
+            started_at: Instant::now(),
+            ws_session_id: Some(session_id.clone()),
+        };
+
+        self.active_requests
+            .insert(conversation_id.clone(), active_request);
+
+        // Spawn the agentic loop for WebSocket
+        let service = self.clone_for_task();
+        let conv_id = conversation_id.clone();
+        let session = session_id.clone();
+
+        tokio::spawn(async move {
+            service
+                .run_agentic_loop_ws(conv_id, user_context, model, enabled_tools, session, ws_manager)
+                .await;
+        });
+
+        conversation_id
+    }
+
+    /// Handle external tool result for WebSocket chat
+    pub async fn handle_tool_result_ws(
         &self,
         conversation_id: &str,
         tool_call_id: &str,
         result: serde_json::Value,
-    ) -> ServiceResult<mpsc::Receiver<SSEEvent>> {
+    ) {
+        debug!(
+            conversation_id = %conversation_id,
+            tool_call_id = %tool_call_id,
+            result_preview = %format!("{:.200}", result.to_string()),
+            "External tool result received via WebSocket"
+        );
+
         // Get the active request and validate
-        let (user_context, model, enabled_tools) = {
-            let mut entry = self
-                .active_requests
-                .get_mut(conversation_id)
-                .ok_or_else(|| ServiceError::ConversationNotFound {
-                    conversation_id: conversation_id.to_string(),
-                })?;
+        {
+            let mut entry = match self.active_requests.get_mut(conversation_id) {
+                Some(e) => e,
+                None => {
+                    warn!(
+                        conversation_id = %conversation_id,
+                        "Tool result for unknown conversation"
+                    );
+                    return;
+                }
+            };
 
             // Verify the tool call ID matches
             if let Some(ref pending) = entry.pending_external_tool {
                 if pending.id != tool_call_id {
-                    return Err(ServiceError::ToolCallNotFound {
-                        tool_call_id: tool_call_id.to_string(),
-                    });
+                    warn!(
+                        conversation_id = %conversation_id,
+                        expected = %pending.id,
+                        got = %tool_call_id,
+                        "Tool call ID mismatch"
+                    );
+                    return;
                 }
             } else {
-                return Err(ServiceError::ToolCallNotFound {
-                    tool_call_id: tool_call_id.to_string(),
-                });
+                warn!(
+                    conversation_id = %conversation_id,
+                    "No pending external tool"
+                );
+                return;
             }
 
             // Add tool result to messages
@@ -1061,36 +1263,46 @@ When asked about rules or game content, use document_search to find relevant inf
                 tool_calls: None,
                 tool_results: Some(vec![ToolResultRecord {
                     tool_call_id: tool_call_id.to_string(),
-                    result,
+                    result: result.clone(),
                     error: None,
                 }]),
             });
 
             // Clear pending tool
             entry.pending_external_tool = None;
+        }
 
-            // Extract what we need to continue the loop
-            (
-                entry.user_context.clone(),
-                None::<String>,
-                None::<Vec<String>>,
-            )
-        };
+        // Send the result through the oneshot channel to unblock the waiting loop
+        if let Some((_, sender)) = self.tool_result_senders.remove(conversation_id) {
+            let _ = sender.send(result);
+        }
+    }
 
-        // Create a new channel for the continuation
-        let (tx, rx) = mpsc::channel(100);
+    /// Continue a paused WebSocket chat
+    pub async fn continue_chat_ws(&self, conversation_id: &str) {
+        debug!(conversation_id = %conversation_id, "Continuing paused WebSocket chat");
 
-        // Spawn the continuation of the agentic loop
-        let service = self.clone_for_task();
-        let conv_id = conversation_id.to_string();
+        // Update the active request to mark it as not paused
+        if let Some(mut entry) = self.active_requests.get_mut(conversation_id) {
+            entry.paused = false;
+        }
 
-        tokio::spawn(async move {
-            service
-                .run_agentic_loop(conv_id, user_context, model, enabled_tools, tx)
-                .await;
-        });
+        // Send continue signal through the oneshot channel
+        if let Some((_, sender)) = self.continue_senders.remove(conversation_id) {
+            let _ = sender.send(());
+        }
+    }
 
-        Ok(rx)
+    /// Cancel an active WebSocket chat
+    pub async fn cancel_chat_ws(&self, conversation_id: &str) {
+        debug!(conversation_id = %conversation_id, "Cancelling WebSocket chat");
+
+        // Remove the active request - the loop will detect this and stop
+        self.active_requests.remove(conversation_id);
+
+        // Clean up any pending channels
+        self.tool_result_senders.remove(conversation_id);
+        self.continue_senders.remove(conversation_id);
     }
 
     /// Upload a document and enqueue it for processing
@@ -1861,6 +2073,8 @@ When asked about rules or game content, use document_search to find relevant inf
             i18n: self.i18n.clone(),
             active_requests: self.active_requests.clone(),
             ws_manager: self.ws_manager.clone(),
+            tool_result_senders: self.tool_result_senders.clone(),
+            continue_senders: self.continue_senders.clone(),
         }
     }
 }
@@ -1882,76 +2096,6 @@ impl UserContext {
     }
 }
 
-/// Chat API request
-#[derive(Debug, Clone, Deserialize)]
-pub struct ChatApiRequest {
-    pub model: Option<String>,
-    pub messages: Vec<ApiMessage>,
-    pub user_context: UserContext,
-    pub conversation_id: Option<String>,
-    #[serde(default)]
-    pub tools: Option<Vec<String>>,
-    #[serde(default)]
-    pub stream: bool,
-}
-
-/// API message
-#[derive(Debug, Clone, Deserialize)]
-pub struct ApiMessage {
-    pub role: String,
-    pub content: String,
-}
-
-/// SSE Event types
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SSEEvent {
-    /// Currently processing
-    Thinking,
-    /// Streaming text from LLM
-    Content { text: String },
-    /// External tool request
-    ToolCall {
-        id: String,
-        tool: String,
-        args: serde_json::Value,
-    },
-    /// Internal tool progress
-    ToolStatus { message: String },
-    /// Internal tool completed
-    ToolResult {
-        id: String,
-        tool: String,
-        summary: String,
-    },
-    /// Loop limit reached
-    Pause {
-        reason: PauseReason,
-        tool_calls_made: u32,
-        elapsed_seconds: u64,
-        message: String,
-    },
-    /// Error occurred
-    Error { message: String, recoverable: bool },
-    /// Request completed
-    Done { usage: Option<Usage> },
-}
-
-/// Pause reason
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PauseReason {
-    ToolLimit,
-    TimeLimit,
-}
-
-/// Token usage
-#[derive(Debug, Clone, Serialize)]
-pub struct Usage {
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-}
-
 /// Active request state (in-memory only)
 #[derive(Debug, Clone)]
 pub struct ActiveRequest {
@@ -1961,10 +2105,14 @@ pub struct ActiveRequest {
     pub pending_external_tool: Option<PendingToolCall>,
     pub paused: bool,
     pub started_at: Instant,
+    /// WebSocket session ID (if this is a WebSocket chat)
+    #[allow(dead_code)]
+    pub ws_session_id: Option<String>,
 }
 
 /// Pending external tool call
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PendingToolCall {
     pub id: String,
     pub tool: String,

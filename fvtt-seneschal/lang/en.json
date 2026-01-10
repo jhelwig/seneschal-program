@@ -129,7 +129,8 @@
     "Notifications": {
       "NotConfigured": "Seneschal Program backend URL is not configured. Please set it in module settings.",
       "PlayerAccessDisabled": "Player access to Seneschal Program is disabled.",
-      "MixedContent": "Cannot connect: Foundry is running on HTTPS but the backend URL uses HTTP. Either configure the backend to use HTTPS, or access Foundry via HTTP."
+      "MixedContent": "Cannot connect: Foundry is running on HTTPS but the backend URL uses HTTP. Either configure the backend to use HTTPS, or access Foundry via HTTP.",
+      "WebSocketNotConnected": "WebSocket connection to Seneschal Program backend is not established. Please wait for reconnection or refresh the page."
     }
   }
 }

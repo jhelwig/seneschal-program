@@ -1,7 +1,8 @@
-//! WebSocket support for real-time document processing updates
+//! WebSocket support for real-time document processing updates and chat
 //!
 //! This module provides a WebSocket server that allows clients to receive
-//! real-time updates about document processing status without polling.
+//! real-time updates about document processing status and bidirectional
+//! chat communication without polling.
 
 use axum::extract::ws::{Message, WebSocket};
 use dashmap::DashMap;
@@ -11,6 +12,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+
+use crate::service::SeneschalService;
 
 /// Messages sent from client to server
 #[derive(Debug, Clone, Deserialize)]
@@ -29,6 +32,27 @@ pub enum ClientMessage {
     SubscribeDocuments,
     /// Unsubscribe from document processing updates
     UnsubscribeDocuments,
+    /// Start a new chat or continue an existing conversation
+    ChatMessage {
+        /// None = start new conversation, Some = continue existing
+        conversation_id: Option<String>,
+        /// The user's message
+        message: String,
+        /// Model to use (optional, uses default if not specified)
+        model: Option<String>,
+        /// Which tools to enable (optional, uses all if not specified)
+        enabled_tools: Option<Vec<String>>,
+    },
+    /// Send a tool result back to the agentic loop
+    ToolResult {
+        conversation_id: String,
+        tool_call_id: String,
+        result: serde_json::Value,
+    },
+    /// Continue a paused chat (after tool limit reached)
+    ContinueChat { conversation_id: String },
+    /// Cancel an active chat
+    CancelChat { conversation_id: String },
 }
 
 /// Messages sent from server to client
@@ -62,6 +86,52 @@ pub enum ServerMessage {
     /// Error message
     Error {
         code: String,
+        message: String,
+        recoverable: bool,
+    },
+    /// Chat conversation started
+    ChatStarted { conversation_id: String },
+    /// Streaming chat content
+    ChatContent { conversation_id: String, text: String },
+    /// Tool call requested (for external tools executed by client)
+    ChatToolCall {
+        conversation_id: String,
+        id: String,
+        tool: String,
+        args: serde_json::Value,
+    },
+    /// Status update for an internal tool being executed
+    ChatToolStatus {
+        conversation_id: String,
+        tool_call_id: String,
+        message: String,
+    },
+    /// Result from an internal tool execution
+    ChatToolResult {
+        conversation_id: String,
+        tool_call_id: String,
+        tool: String,
+        summary: String,
+    },
+    /// Chat paused due to limits (tool calls, time, etc.)
+    ChatPaused {
+        conversation_id: String,
+        reason: String,
+        tool_calls_made: u32,
+        elapsed_seconds: u64,
+        message: String,
+    },
+    /// Chat turn completed
+    ChatTurnComplete {
+        conversation_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt_tokens: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        completion_tokens: Option<u32>,
+    },
+    /// Chat error
+    ChatError {
+        conversation_id: String,
         message: String,
         recoverable: bool,
     },
@@ -100,6 +170,7 @@ struct ConnectionState {
     #[allow(dead_code)] // Kept for debugging/logging
     session_id: String,
     user_id: Option<String>,
+    user_name: Option<String>,
     user_role: Option<u8>,
     tx: mpsc::UnboundedSender<ServerMessage>,
     subscribed_to_documents: bool,
@@ -135,6 +206,7 @@ impl WebSocketManager {
             ConnectionState {
                 session_id,
                 user_id: None,
+                user_name: None,
                 user_role: None,
                 tx,
                 subscribed_to_documents: false,
@@ -150,15 +222,40 @@ impl WebSocketManager {
     }
 
     /// Authenticate a connection
-    fn authenticate(&self, session_id: &str, user_id: String, user_role: u8) -> bool {
+    fn authenticate(
+        &self,
+        session_id: &str,
+        user_id: String,
+        user_name: String,
+        user_role: u8,
+    ) -> bool {
         if let Some(mut conn) = self.connections.get_mut(session_id) {
             conn.user_id = Some(user_id);
+            conn.user_name = Some(user_name);
             conn.user_role = Some(user_role);
             conn.authenticated = true;
             true
         } else {
             false
         }
+    }
+
+    /// Get connection info for a session
+    pub fn get_connection_info(
+        &self,
+        session_id: &str,
+    ) -> Option<(String, Option<String>, u8)> {
+        self.connections.get(session_id).and_then(|conn| {
+            if conn.authenticated {
+                Some((
+                    conn.user_id.clone().unwrap_or_default(),
+                    conn.user_name.clone(),
+                    conn.user_role.unwrap_or(1),
+                ))
+            } else {
+                None
+            }
+        })
     }
 
     /// Set document subscription status for a connection
@@ -174,7 +271,7 @@ impl WebSocketManager {
     }
 
     /// Send a message to a specific connection
-    fn send_to(&self, session_id: &str, msg: ServerMessage) {
+    pub fn send_to(&self, session_id: &str, msg: ServerMessage) {
         if let Some(conn) = self.connections.get(session_id)
             && conn.tx.send(msg).is_err()
         {
@@ -226,7 +323,11 @@ impl WebSocketManager {
 /// This function is called when a WebSocket connection is established.
 /// It manages the connection lifecycle, processes incoming messages,
 /// and forwards outgoing messages.
-pub async fn handle_ws_connection(socket: WebSocket, ws_manager: Arc<WebSocketManager>) {
+pub async fn handle_ws_connection(
+    socket: WebSocket,
+    ws_manager: Arc<WebSocketManager>,
+    service: Arc<SeneschalService>,
+) {
     let session_id = uuid::Uuid::new_v4().to_string();
     info!(session_id = %session_id, "New WebSocket connection");
 
@@ -260,10 +361,17 @@ pub async fn handle_ws_connection(socket: WebSocket, ws_manager: Arc<WebSocketMa
     // Process incoming messages
     let session_id_for_recv = session_id.clone();
     let ws_manager_for_recv = ws_manager.clone();
+    let service_for_recv = service.clone();
     while let Some(result) = ws_rx.next().await {
         match result {
             Ok(Message::Text(text)) => {
-                handle_client_message(&session_id_for_recv, &text, ws_manager_for_recv.as_ref());
+                handle_client_message(
+                    &session_id_for_recv,
+                    &text,
+                    ws_manager_for_recv.clone(),
+                    service_for_recv.clone(),
+                )
+                .await;
             }
             Ok(Message::Binary(data)) => {
                 // Try to parse binary as JSON text
@@ -271,8 +379,10 @@ pub async fn handle_ws_connection(socket: WebSocket, ws_manager: Arc<WebSocketMa
                     handle_client_message(
                         &session_id_for_recv,
                         &text,
-                        ws_manager_for_recv.as_ref(),
-                    );
+                        ws_manager_for_recv.clone(),
+                        service_for_recv.clone(),
+                    )
+                    .await;
                 }
             }
             Ok(Message::Ping(data)) => {
@@ -300,7 +410,12 @@ pub async fn handle_ws_connection(socket: WebSocket, ws_manager: Arc<WebSocketMa
 }
 
 /// Handle a client message
-fn handle_client_message(session_id: &str, text: &str, ws_manager: &WebSocketManager) {
+async fn handle_client_message(
+    session_id: &str,
+    text: &str,
+    ws_manager: Arc<WebSocketManager>,
+    service: Arc<SeneschalService>,
+) {
     let msg: ClientMessage = match serde_json::from_str(text) {
         Ok(msg) => msg,
         Err(e) => {
@@ -339,7 +454,7 @@ fn handle_client_message(session_id: &str, text: &str, ws_manager: &WebSocketMan
             );
 
             // Authenticate the connection
-            ws_manager.authenticate(session_id, user_id.clone(), role);
+            ws_manager.authenticate(session_id, user_id.clone(), user_name, role);
 
             // Send success response
             ws_manager.send_to(
@@ -372,6 +487,91 @@ fn handle_client_message(session_id: &str, text: &str, ws_manager: &WebSocketMan
         ClientMessage::UnsubscribeDocuments => {
             ws_manager.set_document_subscription(session_id, false);
             debug!(session_id = %session_id, "Unsubscribed from document updates");
+        }
+        ClientMessage::ChatMessage {
+            conversation_id,
+            message,
+            model,
+            enabled_tools,
+        } => {
+            // Check if connection is authenticated
+            let conn_info = ws_manager.get_connection_info(session_id);
+            let Some((user_id, user_name, role)) = conn_info else {
+                ws_manager.send_to(
+                    session_id,
+                    ServerMessage::ChatError {
+                        conversation_id: conversation_id.unwrap_or_default(),
+                        message: "Not authenticated".to_string(),
+                        recoverable: false,
+                    },
+                );
+                return;
+            };
+
+            debug!(
+                session_id = %session_id,
+                user_id = %user_id,
+                conversation_id = ?conversation_id,
+                message_preview = %message.chars().take(100).collect::<String>(),
+                "Starting WebSocket chat"
+            );
+
+            // Start the chat via service
+            let conv_id = service
+                .start_chat_ws(
+                    session_id.to_string(),
+                    conversation_id,
+                    message,
+                    model,
+                    enabled_tools,
+                    user_id,
+                    user_name,
+                    role,
+                    ws_manager.clone(),
+                )
+                .await;
+
+            // Send started acknowledgment
+            ws_manager.send_to(
+                session_id,
+                ServerMessage::ChatStarted {
+                    conversation_id: conv_id,
+                },
+            );
+        }
+        ClientMessage::ToolResult {
+            conversation_id,
+            tool_call_id,
+            result,
+        } => {
+            debug!(
+                session_id = %session_id,
+                conversation_id = %conversation_id,
+                tool_call_id = %tool_call_id,
+                "Received tool result via WebSocket"
+            );
+
+            service
+                .handle_tool_result_ws(&conversation_id, &tool_call_id, result)
+                .await;
+        }
+        ClientMessage::ContinueChat { conversation_id } => {
+            debug!(
+                session_id = %session_id,
+                conversation_id = %conversation_id,
+                "Continuing paused chat"
+            );
+
+            service.continue_chat_ws(&conversation_id).await;
+        }
+        ClientMessage::CancelChat { conversation_id } => {
+            debug!(
+                session_id = %session_id,
+                conversation_id = %conversation_id,
+                "Cancelling chat"
+            );
+
+            service.cancel_chat_ws(&conversation_id).await;
         }
     }
 }
@@ -410,6 +610,57 @@ mod tests {
         let unsub_json = r#"{"type":"unsubscribe_documents"}"#;
         let msg: ClientMessage = serde_json::from_str(unsub_json).unwrap();
         assert!(matches!(msg, ClientMessage::UnsubscribeDocuments));
+
+        // Chat messages
+        let chat_json = r#"{"type":"chat_message","conversation_id":null,"message":"Hello","model":"llama3.2","enabled_tools":["search"]}"#;
+        let msg: ClientMessage = serde_json::from_str(chat_json).unwrap();
+        match msg {
+            ClientMessage::ChatMessage {
+                conversation_id,
+                message,
+                model,
+                enabled_tools,
+            } => {
+                assert!(conversation_id.is_none());
+                assert_eq!(message, "Hello");
+                assert_eq!(model, Some("llama3.2".to_string()));
+                assert_eq!(enabled_tools, Some(vec!["search".to_string()]));
+            }
+            _ => panic!("Expected ChatMessage"),
+        }
+
+        let tool_result_json = r#"{"type":"tool_result","conversation_id":"conv123","tool_call_id":"tc_0","result":{"success":true}}"#;
+        let msg: ClientMessage = serde_json::from_str(tool_result_json).unwrap();
+        match msg {
+            ClientMessage::ToolResult {
+                conversation_id,
+                tool_call_id,
+                result,
+            } => {
+                assert_eq!(conversation_id, "conv123");
+                assert_eq!(tool_call_id, "tc_0");
+                assert_eq!(result["success"], true);
+            }
+            _ => panic!("Expected ToolResult"),
+        }
+
+        let continue_json = r#"{"type":"continue_chat","conversation_id":"conv123"}"#;
+        let msg: ClientMessage = serde_json::from_str(continue_json).unwrap();
+        assert!(matches!(
+            msg,
+            ClientMessage::ContinueChat {
+                conversation_id
+            } if conversation_id == "conv123"
+        ));
+
+        let cancel_json = r#"{"type":"cancel_chat","conversation_id":"conv123"}"#;
+        let msg: ClientMessage = serde_json::from_str(cancel_json).unwrap();
+        assert!(matches!(
+            msg,
+            ClientMessage::CancelChat {
+                conversation_id
+            } if conversation_id == "conv123"
+        ));
     }
 
     #[test]
@@ -439,6 +690,51 @@ mod tests {
         assert!(json.contains(r#""document_id":"doc123""#));
         assert!(json.contains(r#""phase":"embedding""#));
         assert!(!json.contains("error")); // should be skipped when None
+
+        // Chat messages
+        let chat_started = ServerMessage::ChatStarted {
+            conversation_id: "conv123".to_string(),
+        };
+        let json = serde_json::to_string(&chat_started).unwrap();
+        assert!(json.contains(r#""type":"chat_started""#));
+        assert!(json.contains(r#""conversation_id":"conv123""#));
+
+        let chat_content = ServerMessage::ChatContent {
+            conversation_id: "conv123".to_string(),
+            text: "Hello world".to_string(),
+        };
+        let json = serde_json::to_string(&chat_content).unwrap();
+        assert!(json.contains(r#""type":"chat_content""#));
+        assert!(json.contains(r#""text":"Hello world""#));
+
+        let tool_call = ServerMessage::ChatToolCall {
+            conversation_id: "conv123".to_string(),
+            id: "tc_0".to_string(),
+            tool: "search".to_string(),
+            args: serde_json::json!({"query": "test"}),
+        };
+        let json = serde_json::to_string(&tool_call).unwrap();
+        assert!(json.contains(r#""type":"chat_tool_call""#));
+        assert!(json.contains(r#""tool":"search""#));
+
+        let turn_complete = ServerMessage::ChatTurnComplete {
+            conversation_id: "conv123".to_string(),
+            prompt_tokens: Some(100),
+            completion_tokens: None,
+        };
+        let json = serde_json::to_string(&turn_complete).unwrap();
+        assert!(json.contains(r#""type":"chat_turn_complete""#));
+        assert!(json.contains(r#""prompt_tokens":100"#));
+        assert!(!json.contains("completion_tokens")); // should be skipped when None
+
+        let chat_error = ServerMessage::ChatError {
+            conversation_id: "conv123".to_string(),
+            message: "Something went wrong".to_string(),
+            recoverable: false,
+        };
+        let json = serde_json::to_string(&chat_error).unwrap();
+        assert!(json.contains(r#""type":"chat_error""#));
+        assert!(json.contains(r#""recoverable":false"#));
     }
 
     #[test]
@@ -452,7 +748,7 @@ mod tests {
         assert_eq!(manager.document_subscriber_count(), 0);
 
         // Authenticate
-        manager.authenticate("session1", "user1".to_string(), 4);
+        manager.authenticate("session1", "user1".to_string(), "User One".to_string(), 4);
 
         // Subscribe
         manager.set_document_subscription("session1", true);

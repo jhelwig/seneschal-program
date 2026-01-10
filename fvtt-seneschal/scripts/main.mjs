@@ -207,19 +207,23 @@ class BackendClient {
   }
 
   /**
-   * Send streaming chat request
+   * Send streaming chat request via WebSocket
    * @param {Object} options - Chat options
+   * @param {Array} options.messages - Chat messages
+   * @param {Object} options.userContext - User context (unused, WebSocket is already authenticated)
+   * @param {string} options.conversationId - Conversation ID
+   * @param {Array<string>} options.tools - Enabled tools
    * @param {Function} options.onChunk - Called with each text chunk
    * @param {Function} options.onToolCall - Called when tool call is needed
    * @param {Function} options.onToolStatus - Called with tool status updates
    * @param {Function} options.onPause - Called when loop pauses
    * @param {Function} options.onComplete - Called when done
    * @param {Function} options.onError - Called on error
+   * @returns {string} The conversation ID
    */
-  async streamChat(options) {
+  streamChat(options) {
     const {
       messages,
-      userContext,
       conversationId,
       tools,
       onChunk,
@@ -230,223 +234,85 @@ class BackendClient {
       onError,
     } = options;
 
-    this.abortController = new AbortController();
+    // Check WebSocket is available
+    if (!globalThis.seneschalWS?.authenticated) {
+      if (onError) {
+        onError(new Error("WebSocket not connected"));
+      }
+      return null;
+    }
+
     const model = this.getSelectedModel();
 
-    try {
-      const response = await fetch(`${this.baseUrl}/api/chat`, {
-        method: "POST",
-        headers: this.headers,
-        body: JSON.stringify({
-          messages,
-          model: model || undefined,
-          user_context: userContext,
-          conversation_id: conversationId,
-          tools,
-          stream: true,
-        }),
-        signal: this.abortController.signal,
-      });
-
-      if (!response.ok) {
-        const errorBody = await response.json().catch(() => ({}));
-        throw new Error(`${response.status}: ${errorBody.message || response.statusText}`);
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let fullContent = "";
-      const allToolCalls = [];
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const data = line.slice(6);
-            if (data === "[DONE]") continue;
-
-            try {
-              const event = JSON.parse(data);
-              await this._handleStreamEvent(event, {
-                onChunk,
-                onToolCall,
-                onToolStatus,
-                onPause,
-                fullContent: (text) => {
-                  fullContent += text;
-                },
-                toolCalls: (tc) => {
-                  allToolCalls.push(tc);
-                },
-              });
-            } catch (e) {
-              console.warn("Failed to parse SSE event:", data, e);
-            }
-          }
-        }
-      }
-
-      if (onComplete) {
-        onComplete(fullContent, allToolCalls);
-      }
-    } catch (error) {
-      if (error.name === "AbortError") {
-        console.log("Chat request aborted");
-      } else if (onError) {
-        onError(error);
-      }
-    } finally {
-      this.abortController = null;
-    }
-  }
-
-  /**
-   * Handle a stream event
-   * @private
-   */
-  async _handleStreamEvent(event, handlers) {
-    const { onChunk, onToolCall, onToolStatus, onPause, fullContent, toolCalls } = handlers;
-
-    switch (event.type) {
-      case "content":
-        if (onChunk) onChunk(event.text);
-        fullContent(event.text);
-        break;
-
-      case "tool_call":
-        if (onToolCall) {
-          await onToolCall(event.id, event.tool, event.args);
-        }
-        toolCalls({ id: event.id, tool: event.tool, args: event.args });
-        break;
-
-      case "tool_status":
-        if (onToolStatus) onToolStatus(event.message);
-        break;
-
-      case "tool_result":
-        // Internal tool completed - optional transparency event
-        // Display status message showing what tool completed
-        if (onToolStatus && event.summary) {
-          onToolStatus(`${event.tool}: ${event.summary}`);
-        }
-        break;
-
-      case "pause":
-        if (onPause) {
-          onPause(event.reason, event.tool_calls_made, event.elapsed_seconds, event.message);
-        }
-        break;
-
-      case "error": {
-        const error = new Error(event.message);
-        error.recoverable = event.recoverable ?? false;
-        throw error;
-      }
-
-      case "done":
-        // Handled in streamChat
-        break;
-    }
-  }
-
-  /**
-   * Send tool result and process the continuation SSE stream
-   * @param {string} conversationId
-   * @param {string} toolCallId
-   * @param {*} result
-   * @param {Object} handlers - Event handlers for the continuation stream
-   */
-  async sendToolResult(conversationId, toolCallId, result, handlers = {}) {
-    const { onChunk, onToolCall, onToolStatus, onPause, onComplete, onError: _onError } = handlers;
-
-    const response = await fetch(`${this.baseUrl}/api/tool_result`, {
-      method: "POST",
-      headers: this.headers,
-      body: JSON.stringify({
-        conversation_id: conversationId,
-        tool_call_id: toolCallId,
-        result,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.json().catch(() => ({}));
-      throw new Error(`${response.status}: ${errorBody.message || response.statusText}`);
-    }
-
-    // Process the SSE stream continuation
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
+    // Track accumulated content for onComplete callback
     let fullContent = "";
     const allToolCalls = [];
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          const data = line.slice(6);
-          if (data === "[DONE]") continue;
-
-          try {
-            const event = JSON.parse(data);
-            await this._handleStreamEvent(event, {
-              onChunk,
-              onToolCall,
-              onToolStatus,
-              onPause,
-              fullContent: (text) => {
-                fullContent += text;
-              },
-              toolCalls: (tc) => {
-                allToolCalls.push(tc);
-              },
-            });
-          } catch (e) {
-            console.warn("Failed to parse SSE event:", data, e);
-          }
+    // Register handlers for this conversation
+    globalThis.seneschalWS.registerChatHandlers(conversationId, {
+      onChunk: (text) => {
+        fullContent += text;
+        if (onChunk) onChunk(text);
+      },
+      onToolCall: async (id, tool, args) => {
+        allToolCalls.push({ id, tool, args });
+        if (onToolCall) {
+          await onToolCall(id, tool, args);
         }
-      }
-    }
+      },
+      onToolStatus,
+      onPause,
+      onComplete: (usage) => {
+        if (onComplete) onComplete(fullContent, allToolCalls, usage);
+      },
+      onError,
+    });
 
-    if (onComplete) {
-      onComplete(fullContent, allToolCalls);
-    }
+    // Get the last message content (the new user message)
+    const lastMessage = messages[messages.length - 1];
+
+    // Send chat message via WebSocket
+    globalThis.seneschalWS.startChat({
+      conversationId: conversationId,
+      message: lastMessage.content,
+      model: model || null,
+      enabledTools: tools,
+    });
+
+    return conversationId;
   }
 
   /**
-   * Continue after pause
-   * @param {string} conversationId
+   * Send tool result via WebSocket
+   * @param {string} conversationId - Conversation ID
+   * @param {string} toolCallId - Tool call ID
+   * @param {*} result - Tool result
+   */
+  sendToolResult(conversationId, toolCallId, result) {
+    if (!globalThis.seneschalWS?.authenticated) {
+      console.error("WebSocket not connected, cannot send tool result");
+      return;
+    }
+
+    globalThis.seneschalWS.sendToolResult(conversationId, toolCallId, result);
+  }
+
+  /**
+   * Continue after pause via WebSocket
+   * @param {string} conversationId - Conversation ID
    * @param {string} action - "continue" or "cancel"
    */
-  async continueChat(conversationId, action) {
-    const response = await fetch(`${this.baseUrl}/api/chat/continue`, {
-      method: "POST",
-      headers: this.headers,
-      body: JSON.stringify({
-        conversation_id: conversationId,
-        action,
-      }),
-    });
-    if (!response.ok) {
-      const errorBody = await response.json().catch(() => ({}));
-      throw new Error(`${response.status}: ${errorBody.message || response.statusText}`);
+  continueChat(conversationId, action) {
+    if (!globalThis.seneschalWS?.authenticated) {
+      console.error("WebSocket not connected, cannot continue chat");
+      return;
     }
-    return response.json();
+
+    if (action === "continue") {
+      globalThis.seneschalWS.continueChat(conversationId);
+    } else {
+      globalThis.seneschalWS.cancelChat(conversationId);
+    }
   }
 
   /**
@@ -754,6 +620,7 @@ class WebSocketClient {
     this.authenticated = false;
     this.pingInterval = null;
     this.connectionPromise = null;
+    this.chatHandlers = new Map(); // conversation_id -> handlers object
   }
 
   /**
@@ -864,6 +731,70 @@ class WebSocketClient {
         console.error(`${MODULE_ID} | WebSocket server error:`, msg);
         this._emit("error", msg);
         break;
+
+      // Chat message types
+      case "chat_started": {
+        const handlers = this.chatHandlers.get(msg.conversation_id);
+        if (handlers?.onStarted) handlers.onStarted(msg.conversation_id);
+        break;
+      }
+      case "chat_content": {
+        const handlers = this.chatHandlers.get(msg.conversation_id);
+        if (handlers?.onChunk) handlers.onChunk(msg.text);
+        break;
+      }
+      case "chat_tool_call": {
+        const handlers = this.chatHandlers.get(msg.conversation_id);
+        if (handlers?.onToolCall) {
+          handlers.onToolCall(msg.id, msg.tool, msg.args);
+        }
+        break;
+      }
+      case "chat_tool_status": {
+        const handlers = this.chatHandlers.get(msg.conversation_id);
+        if (handlers?.onToolStatus) handlers.onToolStatus(msg.message);
+        break;
+      }
+      case "chat_tool_result": {
+        const handlers = this.chatHandlers.get(msg.conversation_id);
+        if (handlers?.onToolStatus) {
+          handlers.onToolStatus(`${msg.tool}: ${msg.summary}`);
+        }
+        break;
+      }
+      case "chat_paused": {
+        const handlers = this.chatHandlers.get(msg.conversation_id);
+        if (handlers?.onPause) {
+          handlers.onPause(msg.reason, msg.tool_calls_made, msg.elapsed_seconds, msg.message);
+        }
+        break;
+      }
+      case "chat_turn_complete": {
+        const handlers = this.chatHandlers.get(msg.conversation_id);
+        if (handlers?.onComplete) {
+          handlers.onComplete({
+            prompt_tokens: msg.prompt_tokens,
+            completion_tokens: msg.completion_tokens,
+          });
+        }
+        // Clean up handlers after completion
+        this.chatHandlers.delete(msg.conversation_id);
+        break;
+      }
+      case "chat_error": {
+        const handlers = this.chatHandlers.get(msg.conversation_id);
+        if (handlers?.onError) {
+          const error = new Error(msg.message);
+          error.recoverable = msg.recoverable ?? false;
+          handlers.onError(error);
+        }
+        // Clean up handlers if not recoverable
+        if (!msg.recoverable) {
+          this.chatHandlers.delete(msg.conversation_id);
+        }
+        break;
+      }
+
       default:
         console.warn(`${MODULE_ID} | Unknown WebSocket message type:`, msg.type);
     }
@@ -891,6 +822,86 @@ class WebSocketClient {
    */
   unsubscribeFromDocuments() {
     this.send({ type: "unsubscribe_documents" });
+  }
+
+  /**
+   * Register handlers for a chat conversation
+   * @param {string} conversationId - Conversation ID
+   * @param {Object} handlers - Event handlers
+   * @param {Function} [handlers.onStarted] - Called when chat starts
+   * @param {Function} [handlers.onChunk] - Called with each text chunk
+   * @param {Function} [handlers.onToolCall] - Called when tool call is needed
+   * @param {Function} [handlers.onToolStatus] - Called with tool status updates
+   * @param {Function} [handlers.onPause] - Called when loop pauses
+   * @param {Function} [handlers.onComplete] - Called when done
+   * @param {Function} [handlers.onError] - Called on error
+   */
+  registerChatHandlers(conversationId, handlers) {
+    this.chatHandlers.set(conversationId, handlers);
+  }
+
+  /**
+   * Unregister handlers for a chat conversation
+   * @param {string} conversationId - Conversation ID
+   */
+  unregisterChatHandlers(conversationId) {
+    this.chatHandlers.delete(conversationId);
+  }
+
+  /**
+   * Start a chat session via WebSocket
+   * @param {Object} options - Chat options
+   * @param {string|null} options.conversationId - Existing conversation ID or null for new
+   * @param {string} options.message - User message
+   * @param {string|null} options.model - Model to use
+   * @param {Array<string>|null} options.enabledTools - Tools to enable
+   */
+  startChat(options) {
+    this.send({
+      type: "chat_message",
+      conversation_id: options.conversationId,
+      message: options.message,
+      model: options.model,
+      enabled_tools: options.enabledTools,
+    });
+  }
+
+  /**
+   * Send a tool result via WebSocket
+   * @param {string} conversationId - Conversation ID
+   * @param {string} toolCallId - Tool call ID
+   * @param {*} result - Tool result
+   */
+  sendToolResult(conversationId, toolCallId, result) {
+    this.send({
+      type: "tool_result",
+      conversation_id: conversationId,
+      tool_call_id: toolCallId,
+      result,
+    });
+  }
+
+  /**
+   * Continue a paused chat
+   * @param {string} conversationId - Conversation ID
+   */
+  continueChat(conversationId) {
+    this.send({
+      type: "continue_chat",
+      conversation_id: conversationId,
+    });
+  }
+
+  /**
+   * Cancel an active chat
+   * @param {string} conversationId - Conversation ID
+   */
+  cancelChat(conversationId) {
+    this.send({
+      type: "cancel_chat",
+      conversation_id: conversationId,
+    });
+    this.chatHandlers.delete(conversationId);
   }
 
   /**
@@ -1200,6 +1211,60 @@ class FvttApiWrapper {
   }
 
   /**
+   * Create a scene with a background image
+   * @param {string} name - Scene name
+   * @param {string} imagePath - Path to background image
+   * @param {number} width - Scene width (optional, defaults to image width)
+   * @param {number} height - Scene height (optional, defaults to image height)
+   * @param {number} gridSize - Grid size in pixels (optional, default 100)
+   * @param {Object} userContext
+   * @returns {Promise<Object>}
+   */
+  static async createScene(name, imagePath, width, height, gridSize, userContext) {
+    // Check GM permission
+    if (userContext.role < CONST.USER_ROLES.GAMEMASTER) {
+      return { error: "Only GMs can create scenes" };
+    }
+
+    try {
+      // Load image to get dimensions if not provided
+      let sceneWidth = width;
+      let sceneHeight = height;
+
+      if (!sceneWidth || !sceneHeight) {
+        const img = await loadTexture(imagePath);
+        sceneWidth = sceneWidth || img.width;
+        sceneHeight = sceneHeight || img.height;
+      }
+
+      const sceneData = {
+        name: name,
+        width: sceneWidth,
+        height: sceneHeight,
+        background: {
+          src: imagePath,
+        },
+        grid: {
+          size: gridSize || 100,
+          type: CONST.GRID_TYPES.SQUARE,
+        },
+        padding: 0,
+      };
+
+      const scene = await Scene.create(sceneData);
+      return {
+        success: true,
+        id: scene.id,
+        name: scene.name,
+        width: scene.width,
+        height: scene.height,
+      };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  /**
    * Roll dice using FVTT's dice system
    * @param {string} formula
    * @param {string} label
@@ -1402,6 +1467,9 @@ class ToolExecutor {
 
       case "system_schema":
         return FvttApiWrapper.getSystemCapabilities();
+
+      case "create_scene":
+        return FvttApiWrapper.createScene(args.name, args.image_path, args.width, args.height, args.grid_size, userContext);
 
       default:
         return { error: `Unknown tool: ${tool}` };
@@ -2273,7 +2341,7 @@ class SeneschalSidebarTab {
   /**
    * Handle send message
    */
-  async _onSendMessage() {
+  _onSendMessage() {
     if (this.isProcessing) return;
 
     const textarea = this._element.find(".seneschal-input");
@@ -2283,6 +2351,12 @@ class SeneschalSidebarTab {
     // Check configuration
     if (!this.backendClient.isConfigured()) {
       ui.notifications.error(game.i18n.localize("SENESCHAL.Notifications.NotConfigured"));
+      return;
+    }
+
+    // Check WebSocket is connected
+    if (!globalThis.seneschalWS?.authenticated) {
+      ui.notifications.error(game.i18n.localize("SENESCHAL.Notifications.WebSocketNotConnected"));
       return;
     }
 
@@ -2296,32 +2370,30 @@ class SeneschalSidebarTab {
     this.isThinking = true;
     this.render();
 
-    const userContext = buildUserContext();
+    // Store user context for tool calls
+    this._currentUserContext = buildUserContext();
 
-    try {
-      await this.backendClient.streamChat({
-        messages: this.session.getMessagesForContext(),
-        userContext,
-        conversationId: this.session.id,
-        tools: [
-          "document_search",
-          "fvtt_read",
-          "fvtt_write",
-          "fvtt_query",
-          "dice_roll",
-          "system_schema",
-        ],
-        onChunk: (text) => this._onChunk(text),
-        onToolCall: (id, tool, args) => this._onToolCall(id, tool, args, userContext),
-        onToolStatus: (message) => this._onToolStatus(message),
-        onPause: (reason, toolCalls, elapsed, message) =>
-          this._onPause(reason, toolCalls, elapsed, message),
-        onComplete: (fullResponse, toolCalls) => this._onComplete(fullResponse, toolCalls),
-        onError: (error) => this._onError(error),
-      });
-    } catch (error) {
-      this._onError(error);
-    }
+    // Start chat via WebSocket (not async - just sends message and registers handlers)
+    this.backendClient.streamChat({
+      messages: this.session.getMessagesForContext(),
+      conversationId: this.session.id,
+      tools: [
+        "document_search",
+        "fvtt_read",
+        "fvtt_write",
+        "fvtt_query",
+        "dice_roll",
+        "system_schema",
+        "create_scene",
+      ],
+      onChunk: (text) => this._onChunk(text),
+      onToolCall: (id, tool, args) => this._onToolCall(id, tool, args),
+      onToolStatus: (message) => this._onToolStatus(message),
+      onPause: (reason, toolCalls, elapsed, message) =>
+        this._onPause(reason, toolCalls, elapsed, message),
+      onComplete: (fullResponse, toolCalls) => this._onComplete(fullResponse, toolCalls),
+      onError: (error) => this._onError(error),
+    });
   }
 
   /**
@@ -2354,25 +2426,16 @@ class SeneschalSidebarTab {
   /**
    * Handle tool call request
    */
-  async _onToolCall(id, tool, args, userContext) {
+  async _onToolCall(id, tool, args) {
     this.toolStatus = game.i18n.localize(`SENESCHAL.ToolStatus.Processing`);
     this.render();
 
-    // Execute the tool
-    const result = await ToolExecutor.execute(tool, args, userContext);
+    // Execute the tool using stored user context
+    const result = await ToolExecutor.execute(tool, args, this._currentUserContext);
 
-    // Send result back to backend and process the continuation stream
-    // The continuation uses the same event handlers as the original request
-    await this.backendClient.sendToolResult(this.session.id, id, result, {
-      onChunk: (text) => this._onChunk(text),
-      onToolCall: (nextId, nextTool, nextArgs) =>
-        this._onToolCall(nextId, nextTool, nextArgs, userContext),
-      onToolStatus: (message) => this._onToolStatus(message),
-      onPause: (reason, toolCalls, elapsed, message) =>
-        this._onPause(reason, toolCalls, elapsed, message),
-      onComplete: (fullResponse, toolCalls) => this._onComplete(fullResponse, toolCalls),
-      onError: (error) => this._onError(error),
-    });
+    // Send result back to backend via WebSocket
+    // The agentic loop will continue automatically
+    this.backendClient.sendToolResult(this.session.id, id, result);
   }
 
   /**
@@ -2396,7 +2459,7 @@ class SeneschalSidebarTab {
   /**
    * Handle continue/cancel after pause
    */
-  async _onContinue(action) {
+  _onContinue(action) {
     this.isPaused = false;
     this.pauseMessage = null;
 
@@ -2405,10 +2468,14 @@ class SeneschalSidebarTab {
       this.isThinking = true;
       this.render();
 
-      await this.backendClient.continueChat(this.session.id, action);
+      // Continue via WebSocket (not async)
+      this.backendClient.continueChat(this.session.id, action);
     } else {
       this.isProcessing = false;
       this.render();
+
+      // Cancel via WebSocket
+      this.backendClient.continueChat(this.session.id, action);
     }
   }
 

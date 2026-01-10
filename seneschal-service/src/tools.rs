@@ -645,7 +645,7 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
                 name: "image_list".to_string(),
-                description: "List images from a document. Use document_find first to get the document ID, then use this to get images from specific pages.".to_string(),
+                description: "List images from a document. Use document_find first to get the document ID, then use this to browse images from specific pages or page ranges.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -653,9 +653,13 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                             "type": "string",
                             "description": "The document ID"
                         },
-                        "page": {
+                        "start_page": {
                             "type": "integer",
-                            "description": "Optional: filter to images from this specific page number"
+                            "description": "Optional: filter to images starting from this page number"
+                        },
+                        "end_page": {
+                            "type": "integer",
+                            "description": "Optional: filter to images up to and including this page number"
                         },
                         "limit": {
                             "type": "integer",
@@ -807,6 +811,39 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
         OllamaToolDefinition {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
+                name: "create_scene".to_string(),
+                description: "Create a Foundry VTT scene with a background image. Use image_deliver first to get the image path.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name for the scene"
+                        },
+                        "image_path": {
+                            "type": "string",
+                            "description": "Path to the background image (from image_deliver)"
+                        },
+                        "width": {
+                            "type": "integer",
+                            "description": "Scene width in pixels (default: from image)"
+                        },
+                        "height": {
+                            "type": "integer",
+                            "description": "Scene height in pixels (default: from image)"
+                        },
+                        "grid_size": {
+                            "type": "integer",
+                            "description": "Grid size in pixels (default: 100)"
+                        }
+                    },
+                    "required": ["name", "image_path"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
                 name: "dice_roll".to_string(),
                 description: "Roll dice using FVTT's dice system. Results are logged to the game.".to_string(),
                 parameters: serde_json::json!({
@@ -930,7 +967,7 @@ pub fn classify_tool(tool_name: &str) -> ToolLocation {
         | "traveller_uwp_parse"
         | "traveller_jump_calc"
         | "traveller_skill_lookup" => ToolLocation::Internal,
-        "fvtt_read" | "fvtt_write" | "fvtt_query" | "dice_roll" => ToolLocation::External,
+        "fvtt_read" | "fvtt_write" | "fvtt_query" | "dice_roll" | "create_scene" => ToolLocation::External,
         _ => ToolLocation::External, // Unknown tools go to client for safety
     }
 }

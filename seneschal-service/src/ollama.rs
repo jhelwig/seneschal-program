@@ -126,6 +126,37 @@ impl OllamaClient {
         Ok(models)
     }
 
+    /// Get context length for a specific model
+    pub async fn get_model_context_length(&self, model_name: &str) -> Option<u32> {
+        let url = format!("{}/api/show", self.config.base_url);
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({ "name": model_name }))
+            .send()
+            .await
+            .ok()?;
+
+        if !response.status().is_success() {
+            return None;
+        }
+
+        let show: ShowResponse = response.json().await.ok()?;
+
+        // Extract context length from model_info
+        show.model_info.as_ref().and_then(|info| {
+            info.get("general.architecture")
+                .and_then(|arch| arch.as_str())
+                .and_then(|arch| {
+                    let key = format!("{}.context_length", arch);
+                    info.get(&key)
+                })
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+        })
+    }
+
     /// Generate a streaming chat completion
     pub async fn chat_stream(
         &self,
@@ -166,11 +197,13 @@ impl OllamaClient {
 
         // Log the messages being sent (at trace level for verbose debugging)
         for (i, msg) in ollama_request.messages.iter().enumerate() {
+            let tool_call_count = msg.tool_calls.as_ref().map(|tc| tc.len()).unwrap_or(0);
             debug!(
                 index = i,
                 role = %msg.role,
                 content_length = msg.content.len(),
                 content_preview = %msg.content.chars().take(200).collect::<String>(),
+                tool_call_count = tool_call_count,
                 "Message {} to Ollama", i
             );
         }
@@ -415,6 +448,22 @@ impl ChatMessage {
             role: "assistant".to_string(),
             content: content.into(),
             tool_calls: None,
+            images: None,
+        }
+    }
+
+    pub fn assistant_with_tool_calls(
+        content: impl Into<String>,
+        tool_calls: Vec<OllamaToolCall>,
+    ) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: content.into(),
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
             images: None,
         }
     }

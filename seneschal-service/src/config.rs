@@ -304,11 +304,11 @@ fn default_agentic_loop() -> AgenticLoopConfig {
 }
 
 fn default_tool_call_pause_threshold() -> u32 {
-    10
+    u32::MAX // Effectively disabled
 }
 
 fn default_time_pause_threshold_secs() -> u64 {
-    60
+    u64::MAX // Effectively disabled
 }
 
 fn default_hard_timeout_secs() -> u64 {

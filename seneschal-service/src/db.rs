@@ -792,7 +792,8 @@ impl Database {
         &self,
         max_access_level: u8,
         document_id: Option<&str>,
-        page_number: Option<i32>,
+        start_page: Option<i32>,
+        end_page: Option<i32>,
         limit: usize,
     ) -> ServiceResult<Vec<DocumentImageWithAccess>> {
         let conn = self.conn.lock().unwrap();
@@ -813,8 +814,12 @@ impl Database {
             sql.push_str(&format!(" AND di.document_id = ?{}", param_idx));
             param_idx += 1;
         }
-        if page_number.is_some() {
-            sql.push_str(&format!(" AND di.page_number = ?{}", param_idx));
+        if start_page.is_some() {
+            sql.push_str(&format!(" AND di.page_number >= ?{}", param_idx));
+            param_idx += 1;
+        }
+        if end_page.is_some() {
+            sql.push_str(&format!(" AND di.page_number <= ?{}", param_idx));
             param_idx += 1;
         }
 
@@ -829,7 +834,10 @@ impl Database {
         if let Some(doc_id) = document_id {
             params_vec.push(Box::new(doc_id.to_string()));
         }
-        if let Some(page) = page_number {
+        if let Some(page) = start_page {
+            params_vec.push(Box::new(page));
+        }
+        if let Some(page) = end_page {
             params_vec.push(Box::new(page));
         }
         params_vec.push(Box::new(limit as i32));

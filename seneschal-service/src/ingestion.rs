@@ -2243,7 +2243,7 @@ impl IngestionService {
             .unwrap_or_default();
 
         PathBuf::from(format!(
-            "{}/page_{}{}.webp",
+            "assets/seneschal/{}/page_{}{}.webp",
             sanitized_title, page_number, sanitized_desc
         ))
     }

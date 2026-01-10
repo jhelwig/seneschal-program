@@ -2,15 +2,12 @@ use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Multipart, Path, Query, State, WebSocketUpgrade},
     http::{StatusCode, header},
-    response::{IntoResponse, Response, Sse, sse::Event},
-    routing::{delete, get, post, put},
+    response::{IntoResponse, Response},
+    routing::{delete, get, post},
 };
-use metrics::{counter, histogram};
 use serde::{Deserialize, Serialize};
-use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio_stream::StreamExt as TokioStreamExt;
+use std::time::Instant;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -19,7 +16,7 @@ use crate::config::{AppConfig, AssetsAccess};
 use crate::db::{Document, DocumentImageWithAccess};
 use crate::error::{I18nError, ServiceError};
 use crate::ingestion::IngestionService;
-use crate::service::{ChatApiRequest, SSEEvent, SeneschalService};
+use crate::service::SeneschalService;
 use crate::tools::{AccessLevel, SearchFilters, TagMatch};
 use crate::websocket::{WebSocketManager, handle_ws_connection};
 
@@ -56,10 +53,6 @@ pub fn router(service: Arc<SeneschalService>, config: &AppConfig) -> Router {
     let max_body_size = config.limits.max_document_size_bytes as usize;
 
     let api_routes = Router::new()
-        // Chat endpoints
-        .route("/chat", post(chat_handler))
-        .route("/chat/continue", post(chat_continue_handler))
-        .route("/tool_result", post(tool_result_handler))
         // Model endpoints
         .route("/models", get(models_handler))
         // Document endpoints - with larger body limit for file uploads
@@ -162,159 +155,9 @@ seneschal_documents_total 0
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     info!("WebSocket upgrade request received");
-    ws.on_upgrade(move |socket| handle_ws_connection(socket, state.ws_manager.clone()))
-}
-
-// === Chat ===
-
-async fn chat_handler(
-    State(state): State<Arc<AppState>>,
-    Json(request): Json<ChatApiRequest>,
-) -> Result<Response, I18nError> {
-    let start = Instant::now();
-
-    counter!("seneschal_requests_total", "endpoint" => "chat").increment(1);
-
-    info!(
-        user_id = %request.user_context.user_id,
-        conversation_id = ?request.conversation_id,
-        "Chat request received"
-    );
-
-    if request.stream {
-        // Streaming response via SSE
-        let rx = state
-            .service
-            .chat(request)
-            .await
-            .map_err(|e| state.i18n_error(e))?;
-
-        let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(|event| {
-            let json = serde_json::to_string(&event).unwrap_or_default();
-            Ok::<_, Infallible>(Event::default().data(json))
-        });
-
-        let sse = Sse::new(stream).keep_alive(
-            axum::response::sse::KeepAlive::new()
-                .interval(Duration::from_secs(15))
-                .text("ping"),
-        );
-
-        Ok(sse.into_response())
-    } else {
-        // Non-streaming response - collect all content
-        let mut rx = state
-            .service
-            .chat(request)
-            .await
-            .map_err(|e| state.i18n_error(e))?;
-        let mut content = String::new();
-        let mut tool_calls = Vec::new();
-
-        while let Some(event) = rx.recv().await {
-            match event {
-                SSEEvent::Content { text } => content.push_str(&text),
-                SSEEvent::ToolCall { id, tool, args } => {
-                    tool_calls.push(serde_json::json!({
-                        "id": id,
-                        "tool": tool,
-                        "args": args
-                    }));
-                }
-                SSEEvent::Done { usage } => {
-                    histogram!("seneschal_request_duration_seconds")
-                        .record(start.elapsed().as_secs_f64());
-
-                    return Ok(Json(ChatResponse {
-                        content,
-                        tool_calls: if tool_calls.is_empty() {
-                            None
-                        } else {
-                            Some(tool_calls)
-                        },
-                        usage,
-                    })
-                    .into_response());
-                }
-                SSEEvent::Error { message, .. } => {
-                    return Err(state.i18n_error(ServiceError::Internal { message }));
-                }
-                _ => {}
-            }
-        }
-
-        Ok(Json(ChatResponse {
-            content,
-            tool_calls: None,
-            usage: None,
-        })
-        .into_response())
-    }
-}
-
-#[derive(Serialize)]
-struct ChatResponse {
-    content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<Vec<serde_json::Value>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    usage: Option<crate::service::Usage>,
-}
-
-async fn chat_continue_handler(
-    State(_state): State<Arc<AppState>>,
-    Json(request): Json<ChatContinueRequest>,
-) -> Json<serde_json::Value> {
-    // In a full implementation, this would signal the agentic loop to continue
-    // For now, return an acknowledgment
-    Json(serde_json::json!({
-        "status": "acknowledged",
-        "conversation_id": request.conversation_id,
-        "action": request.action
-    }))
-}
-
-#[derive(Deserialize)]
-struct ChatContinueRequest {
-    conversation_id: String,
-    action: String, // "continue" or "cancel"
-}
-
-async fn tool_result_handler(
-    State(state): State<Arc<AppState>>,
-    Json(request): Json<ToolResultRequest>,
-) -> Result<Response, I18nError> {
-    // Handle the tool result and get a channel for the continuation
-    let rx = state
-        .service
-        .handle_tool_result(
-            &request.conversation_id,
-            &request.tool_call_id,
-            request.result,
-        )
-        .await
-        .map_err(|e| state.i18n_error(e))?;
-
-    // Return SSE stream for the continuation
-    let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(|event| {
-        let json = serde_json::to_string(&event).unwrap_or_default();
-        Ok::<_, Infallible>(Event::default().data(json))
-    });
-
-    let sse = Sse::new(stream).keep_alive(
-        axum::response::sse::KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("ping"),
-    );
-
-    Ok(sse.into_response())
-}
-
-#[derive(Deserialize)]
-struct ToolResultRequest {
-    conversation_id: String,
-    tool_call_id: String,
-    result: serde_json::Value,
+    ws.on_upgrade(move |socket| {
+        handle_ws_connection(socket, state.ws_manager.clone(), state.service.clone())
+    })
 }
 
 // === Models ===
@@ -713,7 +556,8 @@ async fn list_images_handler(
         .list_document_images(
             params.user_role.unwrap_or(4), // Default to GM
             params.document_id.as_deref(),
-            params.page_number,
+            params.start_page.or(params.page_number), // page_number as start for backwards compat
+            params.end_page.or(params.page_number),   // page_number as end for backwards compat
             params.limit.unwrap_or(100),
         )
         .map_err(|e| state.i18n_error(e))?;
@@ -728,6 +572,8 @@ struct ListImagesParams {
     user_role: Option<u8>,
     document_id: Option<String>,
     page_number: Option<i32>,
+    start_page: Option<i32>,
+    end_page: Option<i32>,
     limit: Option<usize>,
 }
 
