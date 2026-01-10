@@ -8,9 +8,23 @@ fi
 
 echo "Installing project dependencies..."
 
+# Helper to run commands with sudo only if not root
+run_privileged() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+# Fix /tmp permissions if needed (required for apt in some environments)
+if [ ! -w /tmp ]; then
+  run_privileged chmod 1777 /tmp
+fi
+
 # Install system dependencies for PDF processing
-sudo apt-get update
-sudo apt-get install -y libpoppler-glib-dev libqpdf-dev
+run_privileged apt-get update
+run_privileged apt-get install -y libpoppler-glib-dev libqpdf-dev
 
 # Install Rust 1.92.0 with required components
 if ! command -v rustup &> /dev/null; then
@@ -26,10 +40,11 @@ if ! command -v just &> /dev/null; then
   cargo install just
 fi
 
-# Install Node.js 20 if not present or wrong version
-if ! command -v node &> /dev/null || [[ "$(node --version)" != v20* ]]; then
-  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-  sudo apt-get install -y nodejs
+# Node.js 20+ is required - install if missing or outdated
+node_major=$(node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/' || echo "0")
+if [ "$node_major" -lt 20 ]; then
+  curl -fsSL https://deb.nodesource.com/setup_20.x | run_privileged bash -
+  run_privileged apt-get install -y nodejs
 fi
 
 # Install npm dependencies for fvtt-seneschal
