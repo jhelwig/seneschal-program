@@ -92,7 +92,10 @@ pub enum ServerMessage {
     /// Chat conversation started
     ChatStarted { conversation_id: String },
     /// Streaming chat content
-    ChatContent { conversation_id: String, text: String },
+    ChatContent {
+        conversation_id: String,
+        text: String,
+    },
     /// Tool call requested (for external tools executed by client)
     ChatToolCall {
         conversation_id: String,
@@ -241,10 +244,7 @@ impl WebSocketManager {
     }
 
     /// Get connection info for a session
-    pub fn get_connection_info(
-        &self,
-        session_id: &str,
-    ) -> Option<(String, Option<String>, u8)> {
+    pub fn get_connection_info(&self, session_id: &str) -> Option<(String, Option<String>, u8)> {
         self.connections.get(session_id).and_then(|conn| {
             if conn.authenticated {
                 Some((

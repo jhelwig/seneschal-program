@@ -2558,14 +2558,17 @@ Another chapter.
 
     #[test]
     fn test_fvtt_image_path() {
-        // Note: The seneschal/ prefix is added at the config level, not here
+        // Note: The assets/seneschal/ prefix is included in the path for FVTT compatibility
         let path = IngestionService::fvtt_image_path("Core Rulebook", 42, Some("starship map"));
         assert_eq!(
             path.to_string_lossy(),
-            "Core_Rulebook/page_42_starship_map.webp"
+            "assets/seneschal/Core_Rulebook/page_42_starship_map.webp"
         );
 
         let path_no_desc = IngestionService::fvtt_image_path("Test Doc", 1, None);
-        assert_eq!(path_no_desc.to_string_lossy(), "Test_Doc/page_1.webp");
+        assert_eq!(
+            path_no_desc.to_string_lossy(),
+            "assets/seneschal/Test_Doc/page_1.webp"
+        );
     }
 }

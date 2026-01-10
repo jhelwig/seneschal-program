@@ -841,6 +841,603 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                 }),
             },
         },
+        // Scene CRUD (create_scene above, get/update/delete below)
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "get_scene".to_string(),
+                description: "Get a Foundry VTT scene by ID. Returns the scene's configuration including background, dimensions, grid settings, and placed tokens/drawings.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "scene_id": {
+                            "type": "string",
+                            "description": "The scene's document ID"
+                        }
+                    },
+                    "required": ["scene_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "update_scene".to_string(),
+                description: "Update an existing Foundry VTT scene. Can modify name, background, dimensions, grid settings, etc.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "scene_id": {
+                            "type": "string",
+                            "description": "The scene's document ID"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "New name for the scene"
+                        },
+                        "image_path": {
+                            "type": "string",
+                            "description": "New background image path"
+                        },
+                        "width": {
+                            "type": "integer",
+                            "description": "Scene width in pixels"
+                        },
+                        "height": {
+                            "type": "integer",
+                            "description": "Scene height in pixels"
+                        },
+                        "grid_size": {
+                            "type": "integer",
+                            "description": "Grid size in pixels"
+                        },
+                        "data": {
+                            "type": "object",
+                            "description": "Additional scene data to update (advanced)"
+                        }
+                    },
+                    "required": ["scene_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "delete_scene".to_string(),
+                description: "Delete a Foundry VTT scene permanently.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "scene_id": {
+                            "type": "string",
+                            "description": "The scene's document ID"
+                        }
+                    },
+                    "required": ["scene_id"]
+                }),
+            },
+        },
+        // Actor CRUD
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "create_actor".to_string(),
+                description: "Create a Foundry VTT actor (character, NPC, creature, vehicle, etc.). Use system_schema first to understand the actor types and data structure for the current game system.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the actor"
+                        },
+                        "actor_type": {
+                            "type": "string",
+                            "description": "Type of actor (e.g., 'character', 'npc', 'creature', 'vehicle' - varies by game system)"
+                        },
+                        "img": {
+                            "type": "string",
+                            "description": "Path to the actor's portrait image (use image_deliver first)"
+                        },
+                        "data": {
+                            "type": "object",
+                            "description": "Actor system data (stats, attributes, etc. - use system_schema to see structure)"
+                        }
+                    },
+                    "required": ["name", "actor_type"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "get_actor".to_string(),
+                description: "Get a Foundry VTT actor by ID. Returns the actor's complete data including stats, items, and effects.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "actor_id": {
+                            "type": "string",
+                            "description": "The actor's document ID"
+                        }
+                    },
+                    "required": ["actor_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "update_actor".to_string(),
+                description: "Update an existing Foundry VTT actor. Can modify name, image, stats, or any system data.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "actor_id": {
+                            "type": "string",
+                            "description": "The actor's document ID"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "New name for the actor"
+                        },
+                        "img": {
+                            "type": "string",
+                            "description": "New portrait image path"
+                        },
+                        "data": {
+                            "type": "object",
+                            "description": "Actor system data to update (stats, attributes, etc.)"
+                        }
+                    },
+                    "required": ["actor_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "delete_actor".to_string(),
+                description: "Delete a Foundry VTT actor permanently.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "actor_id": {
+                            "type": "string",
+                            "description": "The actor's document ID"
+                        }
+                    },
+                    "required": ["actor_id"]
+                }),
+            },
+        },
+        // Item CRUD
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "create_item".to_string(),
+                description: "Create a Foundry VTT item (weapon, armor, equipment, skill, spell, etc.). Use system_schema first to understand the item types and data structure for the current game system.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the item"
+                        },
+                        "item_type": {
+                            "type": "string",
+                            "description": "Type of item (e.g., 'weapon', 'armor', 'equipment', 'skill' - varies by game system)"
+                        },
+                        "img": {
+                            "type": "string",
+                            "description": "Path to the item's image (use image_deliver first)"
+                        },
+                        "data": {
+                            "type": "object",
+                            "description": "Item system data (damage, weight, cost, etc. - use system_schema to see structure)"
+                        }
+                    },
+                    "required": ["name", "item_type"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "get_item".to_string(),
+                description: "Get a Foundry VTT item by ID. Returns the item's complete data including stats and effects.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "item_id": {
+                            "type": "string",
+                            "description": "The item's document ID"
+                        }
+                    },
+                    "required": ["item_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "update_item".to_string(),
+                description: "Update an existing Foundry VTT item. Can modify name, image, or any system data.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "item_id": {
+                            "type": "string",
+                            "description": "The item's document ID"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "New name for the item"
+                        },
+                        "img": {
+                            "type": "string",
+                            "description": "New item image path"
+                        },
+                        "data": {
+                            "type": "object",
+                            "description": "Item system data to update"
+                        }
+                    },
+                    "required": ["item_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "delete_item".to_string(),
+                description: "Delete a Foundry VTT item permanently.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "item_id": {
+                            "type": "string",
+                            "description": "The item's document ID"
+                        }
+                    },
+                    "required": ["item_id"]
+                }),
+            },
+        },
+        // Journal Entry CRUD
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "create_journal_entry".to_string(),
+                description: "Create a Foundry VTT journal entry for notes, handouts, or lore. Journal entries can have multiple pages with text or images.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the journal entry"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "HTML content for the first page (simple entries)"
+                        },
+                        "img": {
+                            "type": "string",
+                            "description": "Optional cover/header image"
+                        },
+                        "pages": {
+                            "type": "array",
+                            "description": "Array of page objects for multi-page journals: [{name, type: 'text'|'image', text: {content}, src}]",
+                            "items": {
+                                "type": "object"
+                            }
+                        }
+                    },
+                    "required": ["name"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "get_journal_entry".to_string(),
+                description: "Get a Foundry VTT journal entry by ID. Returns the journal's pages and content.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "journal_id": {
+                            "type": "string",
+                            "description": "The journal entry's document ID"
+                        }
+                    },
+                    "required": ["journal_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "update_journal_entry".to_string(),
+                description: "Update an existing Foundry VTT journal entry. Can modify name, content, or pages.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "journal_id": {
+                            "type": "string",
+                            "description": "The journal entry's document ID"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "New name for the journal"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "New HTML content (for simple single-page journals)"
+                        },
+                        "pages": {
+                            "type": "array",
+                            "description": "Updated pages array",
+                            "items": {
+                                "type": "object"
+                            }
+                        }
+                    },
+                    "required": ["journal_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "delete_journal_entry".to_string(),
+                description: "Delete a Foundry VTT journal entry permanently.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "journal_id": {
+                            "type": "string",
+                            "description": "The journal entry's document ID"
+                        }
+                    },
+                    "required": ["journal_id"]
+                }),
+            },
+        },
+        // Rollable Table CRUD
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "create_rollable_table".to_string(),
+                description: "Create a Foundry VTT rollable table for random encounters, loot, events, etc.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the rollable table"
+                        },
+                        "formula": {
+                            "type": "string",
+                            "description": "Dice formula for the table (e.g., '1d6', '2d6', '1d100')"
+                        },
+                        "results": {
+                            "type": "array",
+                            "description": "Array of result objects: [{range: [low, high], text, weight, img}]",
+                            "items": {
+                                "type": "object"
+                            }
+                        },
+                        "img": {
+                            "type": "string",
+                            "description": "Optional table image"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Description of what this table is for"
+                        }
+                    },
+                    "required": ["name", "formula", "results"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "get_rollable_table".to_string(),
+                description: "Get a Foundry VTT rollable table by ID. Returns the table's formula and all results.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "table_id": {
+                            "type": "string",
+                            "description": "The rollable table's document ID"
+                        }
+                    },
+                    "required": ["table_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "update_rollable_table".to_string(),
+                description: "Update an existing Foundry VTT rollable table. Can modify name, formula, or results.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "table_id": {
+                            "type": "string",
+                            "description": "The rollable table's document ID"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "New name for the table"
+                        },
+                        "formula": {
+                            "type": "string",
+                            "description": "New dice formula"
+                        },
+                        "results": {
+                            "type": "array",
+                            "description": "Updated results array",
+                            "items": {
+                                "type": "object"
+                            }
+                        }
+                    },
+                    "required": ["table_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "delete_rollable_table".to_string(),
+                description: "Delete a Foundry VTT rollable table permanently.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "table_id": {
+                            "type": "string",
+                            "description": "The rollable table's document ID"
+                        }
+                    },
+                    "required": ["table_id"]
+                }),
+            },
+        },
+        // List/Query tools for each document type
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "list_actors".to_string(),
+                description: "List actors in Foundry VTT. Can filter by name pattern or other properties.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Filter by name (partial match)"
+                        },
+                        "actor_type": {
+                            "type": "string",
+                            "description": "Filter by actor type (e.g., 'character', 'npc')"
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Filter by folder name"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results (default 20)"
+                        }
+                    }
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "list_items".to_string(),
+                description: "List items in Foundry VTT. Can filter by name pattern or item type.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Filter by name (partial match)"
+                        },
+                        "item_type": {
+                            "type": "string",
+                            "description": "Filter by item type (e.g., 'weapon', 'armor')"
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Filter by folder name"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results (default 20)"
+                        }
+                    }
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "list_journal_entries".to_string(),
+                description: "List journal entries in Foundry VTT. Can filter by name pattern.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Filter by name (partial match)"
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Filter by folder name"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results (default 20)"
+                        }
+                    }
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "list_scenes".to_string(),
+                description: "List scenes in Foundry VTT. Can filter by name pattern.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Filter by name (partial match)"
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Filter by folder name"
+                        },
+                        "active": {
+                            "type": "boolean",
+                            "description": "Filter to only the currently active scene"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results (default 20)"
+                        }
+                    }
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "list_rollable_tables".to_string(),
+                description: "List rollable tables in Foundry VTT. Can filter by name pattern.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Filter by name (partial match)"
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Filter by folder name"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results (default 20)"
+                        }
+                    }
+                }),
+            },
+        },
         OllamaToolDefinition {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
@@ -955,6 +1552,7 @@ pub enum ToolLocation {
 
 pub fn classify_tool(tool_name: &str) -> ToolLocation {
     match tool_name {
+        // Internal tools - executed by the backend
         "document_search"
         | "document_get"
         | "document_list"
@@ -967,7 +1565,40 @@ pub fn classify_tool(tool_name: &str) -> ToolLocation {
         | "traveller_uwp_parse"
         | "traveller_jump_calc"
         | "traveller_skill_lookup" => ToolLocation::Internal,
-        "fvtt_read" | "fvtt_write" | "fvtt_query" | "dice_roll" | "create_scene" => ToolLocation::External,
-        _ => ToolLocation::External, // Unknown tools go to client for safety
+
+        // Generic FVTT tools
+        "fvtt_read" | "fvtt_write" | "fvtt_query" | "dice_roll" => ToolLocation::External,
+
+        // Scene CRUD
+        "create_scene" | "get_scene" | "update_scene" | "delete_scene" | "list_scenes" => {
+            ToolLocation::External
+        }
+
+        // Actor CRUD
+        "create_actor" | "get_actor" | "update_actor" | "delete_actor" | "list_actors" => {
+            ToolLocation::External
+        }
+
+        // Item CRUD
+        "create_item" | "get_item" | "update_item" | "delete_item" | "list_items" => {
+            ToolLocation::External
+        }
+
+        // Journal Entry CRUD
+        "create_journal_entry"
+        | "get_journal_entry"
+        | "update_journal_entry"
+        | "delete_journal_entry"
+        | "list_journal_entries" => ToolLocation::External,
+
+        // Rollable Table CRUD
+        "create_rollable_table"
+        | "get_rollable_table"
+        | "update_rollable_table"
+        | "delete_rollable_table"
+        | "list_rollable_tables" => ToolLocation::External,
+
+        // Unknown tools go to client for safety
+        _ => ToolLocation::External,
     }
 }
