@@ -312,7 +312,8 @@ impl SeneschalService {
                         eval_count,
                         ..
                     } => {
-                        let content_preview: String = accumulated_content.chars().take(500).collect();
+                        let content_preview: String =
+                            accumulated_content.chars().take(500).collect();
                         debug!(
                             conversation_id = %conversation_id,
                             prompt_tokens = ?prompt_eval_count,
@@ -516,7 +517,9 @@ impl SeneschalService {
                                         &session_id,
                                         ServerMessage::ChatError {
                                             conversation_id: conversation_id.clone(),
-                                            message: "Client disconnected while waiting for tool result".to_string(),
+                                            message:
+                                                "Client disconnected while waiting for tool result"
+                                                    .to_string(),
                                             recoverable: false,
                                         },
                                     );
@@ -859,10 +862,13 @@ impl SeneschalService {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(20) as usize;
 
-                match self
-                    .db
-                    .list_document_images(user_context.role, Some(doc_id), start_page, end_page, limit)
-                {
+                match self.db.list_document_images(
+                    user_context.role,
+                    Some(doc_id),
+                    start_page,
+                    end_page,
+                    limit,
+                ) {
                     Ok(images) => {
                         let image_list: Vec<_> = images
                             .into_iter()
@@ -989,7 +995,7 @@ impl SeneschalService {
                         img
                     }
                     Ok(None) => {
-                        return ToolResult::error(call.id.clone(), "Image not found".to_string())
+                        return ToolResult::error(call.id.clone(), "Image not found".to_string());
                     }
                     Err(e) => return ToolResult::error(call.id.clone(), e.to_string()),
                 };
@@ -1202,7 +1208,14 @@ impl SeneschalService {
 
         tokio::spawn(async move {
             service
-                .run_agentic_loop_ws(conv_id, user_context, model, enabled_tools, session, ws_manager)
+                .run_agentic_loop_ws(
+                    conv_id,
+                    user_context,
+                    model,
+                    enabled_tools,
+                    session,
+                    ws_manager,
+                )
                 .await;
         });
 

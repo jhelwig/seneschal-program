@@ -3,7 +3,7 @@ use axum::{
     extract::{DefaultBodyLimit, Multipart, Path, Query, State, WebSocketUpgrade},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
