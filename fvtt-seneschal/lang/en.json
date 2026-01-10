@@ -103,7 +103,12 @@
       "ReextractImagesQueued": "Image re-extraction queued. Processing will continue in the background.",
       "ReextractImagesSuccess": "Images re-extracted successfully.",
       "ReextractImagesError": "Failed to re-extract images.",
-      "BrowseImages": "Browse Images"
+      "BrowseImages": "Browse Images",
+      "Edit": "Edit Document",
+      "SaveChanges": "Save Changes",
+      "EditSuccess": "Document updated successfully.",
+      "EditError": "Failed to update document.",
+      "TitleRequired": "Title is required."
     },
     "Images": {
       "Title": "Image Browser",

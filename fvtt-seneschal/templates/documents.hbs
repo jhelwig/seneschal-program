@@ -56,7 +56,7 @@
       </thead>
       <tbody>
         {{#each documents}}
-        <tr data-document-id="{{this.id}}" class="{{#if (eq this.processing_status 'processing')}}processing{{else if (eq this.processing_status 'failed')}}failed{{/if}} {{#if (eq ../processingDoc this.id)}}reprocessing{{/if}}">
+        <tr data-document-id="{{this.id}}" data-document-title="{{this.title}}" data-document-access="{{this.access_level_str}}" data-document-tags="{{this.tags_str}}" class="{{#if (eq this.processing_status 'processing')}}processing{{else if (eq this.processing_status 'failed')}}failed{{/if}} {{#if (eq ../processingDoc this.id)}}reprocessing{{/if}}">
           <td class="document-title">
             {{this.title}}
             {{#if this.processing_error}}
@@ -113,6 +113,9 @@
             </button>
             {{/if}}
             {{/if}}
+            <button type="button" class="seneschal-edit-doc" title="{{localize 'SENESCHAL.Documents.Edit'}}" {{#if ../processingDoc}}disabled{{/if}} {{#if (eq this.processing_status 'processing')}}disabled{{/if}}>
+              <i class="fas fa-edit"></i>
+            </button>
             <button type="button" class="seneschal-delete-doc" title="{{localize 'SENESCHAL.Documents.Delete'}}" {{#if ../processingDoc}}disabled{{/if}}>
               <i class="fas fa-trash"></i>
             </button>

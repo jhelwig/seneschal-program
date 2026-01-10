@@ -3,7 +3,7 @@ use axum::{
     extract::{DefaultBodyLimit, Multipart, Path, Query, State, WebSocketUpgrade},
     http::{StatusCode, header},
     response::{IntoResponse, Response, Sse, sse::Event},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use metrics::{counter, histogram};
 use serde::{Deserialize, Serialize};
@@ -69,6 +69,7 @@ pub fn router(service: Arc<SeneschalService>, config: &AppConfig) -> Router {
             post(upload_document_handler).layer(DefaultBodyLimit::max(max_body_size)),
         )
         .route("/documents/{id}", get(get_document_handler))
+        .route("/documents/{id}", put(update_document_handler))
         .route("/documents/{id}", delete(delete_document_handler))
         .route("/documents/{id}/images", get(get_document_images_handler))
         .route(
@@ -468,6 +469,55 @@ async fn delete_document_handler(
 struct DeleteResponse {
     success: bool,
     message: String,
+}
+
+/// Update document details (title, access_level, tags)
+async fn update_document_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<UpdateDocumentRequest>,
+) -> Result<Json<Document>, I18nError> {
+    // Parse access level string to enum
+    let access_level = match request.access_level.as_str() {
+        "player" => AccessLevel::Player,
+        "trusted" => AccessLevel::Trusted,
+        "assistant" => AccessLevel::Assistant,
+        "gm_only" => AccessLevel::GmOnly,
+        _ => AccessLevel::GmOnly, // Default to GM Only
+    };
+
+    // Parse tags from comma-separated string
+    let tags: Vec<String> = request
+        .tags
+        .as_ref()
+        .map(|t| t.split(',').map(|s| s.trim().to_string()).collect())
+        .unwrap_or_default();
+
+    let updated = state
+        .service
+        .update_document(&id, &request.title, access_level, tags)
+        .map_err(|e| state.i18n_error(e))?;
+
+    if !updated {
+        return Err(state.i18n_error(ServiceError::DocumentNotFound { document_id: id }));
+    }
+
+    // Return the updated document
+    let document = state
+        .service
+        .db
+        .get_document(&id)
+        .map_err(|e| state.i18n_error(e))?
+        .ok_or_else(|| state.i18n_error(ServiceError::DocumentNotFound { document_id: id }))?;
+
+    Ok(Json(document))
+}
+
+#[derive(Deserialize)]
+struct UpdateDocumentRequest {
+    title: String,
+    access_level: String,
+    tags: Option<String>,
 }
 
 /// Delete all images for a document

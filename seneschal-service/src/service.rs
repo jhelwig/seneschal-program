@@ -1323,6 +1323,18 @@ When asked about rules or game content, use document_search to find relevant inf
         self.db.delete_document(document_id)
     }
 
+    /// Update document details (title, access_level, tags)
+    pub fn update_document(
+        &self,
+        document_id: &str,
+        title: &str,
+        access_level: crate::tools::AccessLevel,
+        tags: Vec<String>,
+    ) -> ServiceResult<bool> {
+        self.db
+            .update_document(document_id, title, access_level, tags)
+    }
+
     /// Get images for a document
     pub fn get_document_images(
         &self,

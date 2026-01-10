@@ -565,6 +565,31 @@ class BackendClient {
   }
 
   /**
+   * Update a document's details
+   * @param {string} documentId
+   * @param {Object} updates - Updated fields
+   * @param {string} updates.title - Document title
+   * @param {string} updates.access_level - Access level (player, trusted, assistant, gm_only)
+   * @param {string} [updates.tags] - Comma-separated tags
+   * @returns {Promise<Object>} Updated document
+   */
+  async updateDocument(documentId, updates) {
+    const response = await fetch(`${this.baseUrl}/api/documents/${documentId}`, {
+      method: "PUT",
+      headers: {
+        ...this.headers,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(updates),
+    });
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      throw new Error(errorBody.message || `Failed to update document: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  /**
    * Get images for a document
    * @param {string} documentId
    * @returns {Promise<Object>} Document images response
@@ -1420,10 +1445,27 @@ class DocumentManagementDialog extends Application {
    * Get template data
    */
   getData() {
-    // Enhance documents with isPdf flag
+    // Map access level number to string
+    const accessLevelToStr = (level) => {
+      switch (level) {
+        case 1:
+          return "player";
+        case 2:
+          return "trusted";
+        case 3:
+          return "assistant";
+        case 4:
+        default:
+          return "gm_only";
+      }
+    };
+
+    // Enhance documents with isPdf flag and string representations
     const documentsEnhanced = this.documents.map((doc) => ({
       ...doc,
       isPdf: doc.file_path?.toLowerCase().endsWith(".pdf"),
+      access_level_str: accessLevelToStr(doc.access_level),
+      tags_str: Array.isArray(doc.tags) ? doc.tags.join(", ") : "",
     }));
 
     return {
@@ -1586,6 +1628,9 @@ class DocumentManagementDialog extends Application {
     // Upload form
     html.find(".seneschal-upload-form").on("submit", this._onUpload.bind(this));
 
+    // Edit document buttons
+    html.find(".seneschal-edit-doc").click(this._onEdit.bind(this));
+
     // Delete document buttons
     html.find(".seneschal-delete-doc").click(this._onDelete.bind(this));
 
@@ -1701,6 +1746,86 @@ class DocumentManagementDialog extends Application {
       this.uploadProgress = null;
       this.render(false);
     }
+  }
+
+  /**
+   * Handle document edit
+   */
+  async _onEdit(event) {
+    event.preventDefault();
+
+    const row = event.currentTarget.closest("tr");
+    const documentId = row.dataset.documentId;
+    const currentTitle = row.dataset.documentTitle;
+    const currentAccess = row.dataset.documentAccess;
+    const currentTags = row.dataset.documentTags;
+
+    // Create the edit dialog content
+    const content = `
+      <form class="seneschal-edit-form">
+        <div class="form-group">
+          <label for="edit-title">${game.i18n.localize("SENESCHAL.Documents.DocumentTitle")}</label>
+          <input type="text" id="edit-title" name="title" value="${currentTitle}" required />
+        </div>
+        <div class="form-group">
+          <label for="edit-access">${game.i18n.localize("SENESCHAL.Documents.AccessLevel")}</label>
+          <select id="edit-access" name="access_level">
+            <option value="player" ${currentAccess === "player" ? "selected" : ""}>${game.i18n.localize("SENESCHAL.Documents.AccessPlayer")}</option>
+            <option value="trusted" ${currentAccess === "trusted" ? "selected" : ""}>${game.i18n.localize("SENESCHAL.Documents.AccessTrusted")}</option>
+            <option value="assistant" ${currentAccess === "assistant" ? "selected" : ""}>${game.i18n.localize("SENESCHAL.Documents.AccessAssistant")}</option>
+            <option value="gm_only" ${currentAccess === "gm_only" ? "selected" : ""}>${game.i18n.localize("SENESCHAL.Documents.AccessGmOnly")}</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="edit-tags">${game.i18n.localize("SENESCHAL.Documents.Tags")}</label>
+          <input type="text" id="edit-tags" name="tags" value="${currentTags}" placeholder="${game.i18n.localize("SENESCHAL.Documents.TagsPlaceholder")}" />
+        </div>
+      </form>
+    `;
+
+    const dialog = new Dialog({
+      title: game.i18n.localize("SENESCHAL.Documents.Edit"),
+      content,
+      buttons: {
+        save: {
+          icon: '<i class="fas fa-save"></i>',
+          label: game.i18n.localize("SENESCHAL.Documents.SaveChanges"),
+          callback: async (html) => {
+            const title = html.find("#edit-title").val().trim();
+            const accessLevel = html.find("#edit-access").val();
+            const tags = html.find("#edit-tags").val().trim();
+
+            if (!title) {
+              ui.notifications.error(game.i18n.localize("SENESCHAL.Documents.TitleRequired"));
+              return;
+            }
+
+            try {
+              await this.backendClient.updateDocument(documentId, {
+                title,
+                access_level: accessLevel,
+                tags: tags || undefined,
+              });
+              ui.notifications.info(game.i18n.localize("SENESCHAL.Documents.EditSuccess"));
+              await this._loadDocuments();
+            } catch (error) {
+              console.error("Edit failed:", error);
+              ui.notifications.error(
+                `${game.i18n.localize("SENESCHAL.Documents.EditError")}: ${error.message}`,
+                { permanent: true }
+              );
+            }
+          },
+        },
+        cancel: {
+          icon: '<i class="fas fa-times"></i>',
+          label: game.i18n.localize("SENESCHAL.Cancel"),
+        },
+      },
+      default: "save",
+    });
+
+    dialog.render(true);
   }
 
   /**

@@ -1082,6 +1082,50 @@ impl Database {
         Ok(rows > 0)
     }
 
+    /// Update document details (title, access_level, and tags)
+    pub fn update_document(
+        &self,
+        document_id: &str,
+        title: &str,
+        access_level: AccessLevel,
+        tags: Vec<String>,
+    ) -> ServiceResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        // Update the document's title and access_level
+        let rows = conn
+            .execute(
+                "UPDATE documents SET title = ?1, access_level = ?2, updated_at = datetime('now') WHERE id = ?3",
+                params![title, access_level as u8, document_id],
+            )
+            .map_err(DatabaseError::Query)?;
+
+        if rows == 0 {
+            return Ok(false);
+        }
+
+        // Delete existing tags
+        conn.execute(
+            "DELETE FROM document_tags WHERE document_id = ?1",
+            params![document_id],
+        )
+        .map_err(DatabaseError::Query)?;
+
+        // Insert new tags
+        for tag in &tags {
+            let tag = tag.trim();
+            if !tag.is_empty() {
+                conn.execute(
+                    "INSERT OR IGNORE INTO document_tags (document_id, tag) VALUES (?1, ?2)",
+                    params![document_id, tag],
+                )
+                .map_err(DatabaseError::Query)?;
+            }
+        }
+
+        Ok(true)
+    }
+
     /// Get the next document pending processing (oldest first)
     /// Used by the document processing worker queue
     pub fn get_next_pending_document(&self) -> ServiceResult<Option<Document>> {
