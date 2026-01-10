@@ -238,6 +238,42 @@ impl Database {
             })?;
         }
 
+        // Migration: Add fvtt_image_descriptions table for caching on-demand vision descriptions
+        let has_fvtt_image_descriptions: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='fvtt_image_descriptions'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+            > 0;
+
+        if !has_fvtt_image_descriptions {
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS fvtt_image_descriptions (
+                    id TEXT PRIMARY KEY,
+                    image_path TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'data',
+                    description TEXT NOT NULL,
+                    embedding BLOB,
+                    vision_model TEXT NOT NULL,
+                    width INTEGER,
+                    height INTEGER,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    UNIQUE(image_path, source)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_fvtt_image_descriptions_path
+                    ON fvtt_image_descriptions(image_path);
+                "#,
+            )
+            .map_err(|e| DatabaseError::Migration {
+                message: format!("Failed to create fvtt_image_descriptions table: {}", e),
+            })?;
+        }
+
         Ok(())
     }
 
@@ -1017,6 +1053,68 @@ impl Database {
         }
     }
 
+    /// Get a cached FVTT image description by path and source
+    pub fn get_fvtt_image_description(
+        &self,
+        image_path: &str,
+        source: &str,
+    ) -> ServiceResult<Option<FvttImageDescription>> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.query_row(
+            r#"
+            SELECT id, image_path, source, description, embedding, vision_model, width, height, created_at, updated_at
+            FROM fvtt_image_descriptions
+            WHERE image_path = ?1 AND source = ?2
+            "#,
+            params![image_path, source],
+            FvttImageDescription::from_row,
+        )
+        .optional()
+        .map_err(DatabaseError::Query)
+        .map_err(Into::into)
+    }
+
+    /// Insert or update a cached FVTT image description
+    pub fn upsert_fvtt_image_description(&self, desc: &FvttImageDescription) -> ServiceResult<()> {
+        let conn = self.conn.lock().unwrap();
+
+        let embedding_blob: Option<Vec<u8>> = desc
+            .embedding
+            .as_ref()
+            .map(|emb| emb.iter().flat_map(|f| f.to_le_bytes()).collect());
+
+        conn.execute(
+            r#"
+            INSERT INTO fvtt_image_descriptions
+                (id, image_path, source, description, embedding, vision_model, width, height, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(image_path, source) DO UPDATE SET
+                description = excluded.description,
+                embedding = excluded.embedding,
+                vision_model = excluded.vision_model,
+                width = excluded.width,
+                height = excluded.height,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                desc.id,
+                desc.image_path,
+                desc.source,
+                desc.description,
+                embedding_blob,
+                desc.vision_model,
+                desc.width.map(|v| v as i32),
+                desc.height.map(|v| v as i32),
+                desc.created_at.to_rfc3339(),
+                desc.updated_at.to_rfc3339(),
+            ],
+        )
+        .map_err(DatabaseError::Query)?;
+
+        Ok(())
+    }
+
     /// Update document processing status
     pub fn update_document_processing_status(
         &self,
@@ -1573,4 +1671,49 @@ pub struct DocumentImageWithAccess {
     pub image: DocumentImage,
     pub document_title: String,
     pub access_level: AccessLevel,
+}
+
+/// Cached vision model description for an arbitrary FVTT image
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FvttImageDescription {
+    pub id: String,
+    pub image_path: String,
+    pub source: String,
+    pub description: String,
+    pub embedding: Option<Vec<f32>>,
+    pub vision_model: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl FvttImageDescription {
+    fn from_row(row: &Row<'_>) -> Result<Self, rusqlite::Error> {
+        let created_at_str: String = row.get(8)?;
+        let updated_at_str: String = row.get(9)?;
+        let embedding_blob: Option<Vec<u8>> = row.get(4)?;
+        let embedding = embedding_blob.map(|blob| {
+            blob.chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .collect()
+        });
+
+        Ok(Self {
+            id: row.get(0)?,
+            image_path: row.get(1)?,
+            source: row.get(2)?,
+            description: row.get(3)?,
+            embedding,
+            vision_model: row.get(5)?,
+            width: row.get::<_, Option<i32>>(6)?.map(|v| v as u32),
+            height: row.get::<_, Option<i32>>(7)?.map(|v| v as u32),
+            created_at: DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+        })
+    }
 }

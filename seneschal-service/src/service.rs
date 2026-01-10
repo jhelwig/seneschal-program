@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use crate::config::{AppConfig, AssetsAccess};
 use crate::db::{
-    Conversation, ConversationMessage, ConversationMetadata, Database, Document, MessageRole,
-    ProcessingStatus, ToolCallRecord, ToolResultRecord,
+    Conversation, ConversationMessage, ConversationMetadata, Database, Document,
+    FvttImageDescription, MessageRole, ProcessingStatus, ToolCallRecord, ToolResultRecord,
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::i18n::I18n;
@@ -1236,9 +1236,9 @@ impl SeneschalService {
             "External tool result received via WebSocket"
         );
 
-        // Get the active request and validate
-        {
-            let mut entry = match self.active_requests.get_mut(conversation_id) {
+        // Get pending tool info and validate
+        let pending_info: Option<(String, serde_json::Value)> = {
+            let entry = match self.active_requests.get(conversation_id) {
                 Some(e) => e,
                 None => {
                     warn!(
@@ -1260,6 +1260,7 @@ impl SeneschalService {
                     );
                     return;
                 }
+                Some((pending.tool.clone(), pending.args.clone()))
             } else {
                 warn!(
                     conversation_id = %conversation_id,
@@ -1267,16 +1268,32 @@ impl SeneschalService {
                 );
                 return;
             }
+        };
 
-            // Add tool result to messages
+        // Process the result - special handling for image_describe (two-phase tool)
+        let (tool_name, tool_args) = pending_info.unwrap();
+        let final_result = if tool_name == "image_describe" {
+            self.process_image_describe_result(&result, &tool_args)
+                .await
+        } else {
+            result.clone()
+        };
+
+        // Add tool result to messages
+        {
+            let mut entry = match self.active_requests.get_mut(conversation_id) {
+                Some(e) => e,
+                None => return,
+            };
+
             entry.messages.push(ConversationMessage {
                 role: MessageRole::Tool,
-                content: serde_json::to_string(&result).unwrap_or_default(),
+                content: serde_json::to_string(&final_result).unwrap_or_default(),
                 timestamp: Utc::now(),
                 tool_calls: None,
                 tool_results: Some(vec![ToolResultRecord {
                     tool_call_id: tool_call_id.to_string(),
-                    result: result.clone(),
+                    result: final_result.clone(),
                     error: None,
                 }]),
             });
@@ -1287,8 +1304,137 @@ impl SeneschalService {
 
         // Send the result through the oneshot channel to unblock the waiting loop
         if let Some((_, sender)) = self.tool_result_senders.remove(conversation_id) {
-            let _ = sender.send(result);
+            let _ = sender.send(final_result);
         }
+    }
+
+    /// Process image_describe tool result - fetch from cache or call vision model
+    async fn process_image_describe_result(
+        &self,
+        raw_result: &serde_json::Value,
+        tool_args: &serde_json::Value,
+    ) -> serde_json::Value {
+        // Check for error in FVTT response
+        if let Some(error) = raw_result.get("error") {
+            return serde_json::json!({
+                "error": error
+            });
+        }
+
+        let image_path = raw_result
+            .get("image_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let force_refresh = tool_args
+            .get("force_refresh")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let context = tool_args.get("context").and_then(|v| v.as_str());
+
+        // Check cache first (unless force_refresh)
+        if !force_refresh {
+            match self.db.get_fvtt_image_description(image_path, "data") {
+                Ok(Some(cached)) => {
+                    debug!(
+                        image_path = %image_path,
+                        "Returning cached image description"
+                    );
+                    return serde_json::json!({
+                        "image_path": image_path,
+                        "description": cached.description,
+                        "cached": true,
+                        "width": cached.width,
+                        "height": cached.height
+                    });
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(error = %e, "Failed to check image description cache");
+                }
+            }
+        }
+
+        // Get vision model from FVTT response
+        let vision_model = match raw_result.get("vision_model").and_then(|v| v.as_str()) {
+            Some(model) if !model.is_empty() => model,
+            _ => {
+                return serde_json::json!({
+                    "error": "No vision model configured in FVTT settings"
+                });
+            }
+        };
+
+        // Get image data from FVTT response
+        let image_data = match raw_result.get("image_data").and_then(|v| v.as_str()) {
+            Some(data) => data,
+            None => {
+                return serde_json::json!({
+                    "error": "No image data in FVTT response"
+                });
+            }
+        };
+
+        // Build prompt
+        let prompt = if let Some(ctx) = context {
+            format!(
+                "Describe this image in detail for use in a tabletop RPG. Context: {}",
+                ctx
+            )
+        } else {
+            "Describe this image in detail for use in a tabletop RPG. \
+             Focus on what the image depicts (characters, creatures, locations, items, maps, etc.) \
+             and any text visible in the image. Be concise but descriptive."
+                .to_string()
+        };
+
+        // Call vision model
+        let message = ChatMessage::user_with_image(&prompt, image_data.to_string());
+        let description = match self
+            .ollama
+            .generate_simple(vision_model, vec![message])
+            .await
+        {
+            Ok(desc) => desc,
+            Err(e) => {
+                error!(error = %e, "Failed to call vision model");
+                return serde_json::json!({
+                    "error": format!("Vision model error: {}", e)
+                });
+            }
+        };
+
+        // Cache the result (using UUID since upsert handles conflicts via unique constraint)
+        let cache_id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        if let Err(e) = self
+            .db
+            .upsert_fvtt_image_description(&FvttImageDescription {
+                id: cache_id,
+                image_path: image_path.to_string(),
+                source: "data".to_string(),
+                description: description.clone(),
+                embedding: None, // Could generate for semantic search later
+                vision_model: vision_model.to_string(),
+                width: None,
+                height: None,
+                created_at: now,
+                updated_at: now,
+            })
+        {
+            warn!(error = %e, "Failed to cache image description");
+        }
+
+        debug!(
+            image_path = %image_path,
+            vision_model = %vision_model,
+            "Generated and cached new image description"
+        );
+
+        serde_json::json!({
+            "image_path": image_path,
+            "description": description,
+            "cached": false
+        })
     }
 
     /// Continue a paused WebSocket chat

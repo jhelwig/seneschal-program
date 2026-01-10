@@ -835,6 +835,10 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                         "grid_size": {
                             "type": "integer",
                             "description": "Grid size in pixels (default: 100)"
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Name of folder to place the scene in"
                         }
                     },
                     "required": ["name", "image_path"]
@@ -941,6 +945,10 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                         "data": {
                             "type": "object",
                             "description": "Actor system data (stats, attributes, etc. - use system_schema to see structure)"
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Name of folder to place the actor in"
                         }
                     },
                     "required": ["name", "actor_type"]
@@ -1034,6 +1042,10 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                         "data": {
                             "type": "object",
                             "description": "Item system data (damage, weight, cost, etc. - use system_schema to see structure)"
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Name of folder to place the item in"
                         }
                     },
                     "required": ["name", "item_type"]
@@ -1130,6 +1142,10 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                             "items": {
                                 "type": "object"
                             }
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Name of folder to place the journal entry in"
                         }
                     },
                     "required": ["name"]
@@ -1233,6 +1249,10 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                         "description": {
                             "type": "string",
                             "description": "Description of what this table is for"
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Name of folder to place the table in"
                         }
                     },
                     "required": ["name", "formula", "results"]
@@ -1438,6 +1458,109 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                 }),
             },
         },
+        // Folder management tools
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "list_folders".to_string(),
+                description: "List all folders for a specific document type in Foundry VTT.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "document_type": {
+                            "type": "string",
+                            "enum": ["Actor", "Item", "JournalEntry", "Scene", "RollTable"],
+                            "description": "Type of documents the folders contain"
+                        },
+                        "parent_folder": {
+                            "type": "string",
+                            "description": "Filter to only show folders inside this parent folder"
+                        }
+                    },
+                    "required": ["document_type"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "create_folder".to_string(),
+                description: "Create a new folder for organizing documents in Foundry VTT.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the folder"
+                        },
+                        "document_type": {
+                            "type": "string",
+                            "enum": ["Actor", "Item", "JournalEntry", "Scene", "RollTable"],
+                            "description": "Type of documents this folder will contain"
+                        },
+                        "parent_folder": {
+                            "type": "string",
+                            "description": "Name of parent folder for nesting (optional)"
+                        },
+                        "color": {
+                            "type": "string",
+                            "description": "Folder color as hex code (e.g., '#ff0000')"
+                        }
+                    },
+                    "required": ["name", "document_type"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "update_folder".to_string(),
+                description: "Update a folder's properties (rename, move, or change color).".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "folder_id": {
+                            "type": "string",
+                            "description": "ID of the folder to update"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "New name for the folder"
+                        },
+                        "parent_folder": {
+                            "type": "string",
+                            "description": "New parent folder name (use null to move to root)"
+                        },
+                        "color": {
+                            "type": "string",
+                            "description": "New color as hex code"
+                        }
+                    },
+                    "required": ["folder_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "delete_folder".to_string(),
+                description: "Delete a folder. By default, documents inside are moved to root level.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "folder_id": {
+                            "type": "string",
+                            "description": "ID of the folder to delete"
+                        },
+                        "delete_contents": {
+                            "type": "boolean",
+                            "description": "If true, also delete all documents inside the folder (default: false)"
+                        }
+                    },
+                    "required": ["folder_id"]
+                }),
+            },
+        },
         OllamaToolDefinition {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
@@ -1540,6 +1663,62 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                 }),
             },
         },
+        // FVTT Asset Tools
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "fvtt_assets_browse".to_string(),
+                description: "Browse files in Foundry VTT's file system. Returns a list of files and directories at the specified path.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to browse (e.g., 'assets', 'assets/seneschal/tokens'). Defaults to root."
+                        },
+                        "source": {
+                            "type": "string",
+                            "enum": ["data", "public", "s3"],
+                            "description": "File source to browse (default: 'data')"
+                        },
+                        "extensions": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Filter by file extensions (e.g., ['.webp', '.png', '.jpg'])"
+                        },
+                        "recursive": {
+                            "type": "boolean",
+                            "description": "If true, also list files in subdirectories (default: false)"
+                        }
+                    }
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "image_describe".to_string(),
+                description: "Get a detailed vision model description of an image file in FVTT. Uses the configured vision model to analyze the image. Results are cached.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "image_path": {
+                            "type": "string",
+                            "description": "FVTT path to the image (e.g., 'assets/tokens/guard.webp')"
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "Optional context about what the image is for (e.g., 'NPC portrait for a tavern encounter')"
+                        },
+                        "force_refresh": {
+                            "type": "boolean",
+                            "description": "If true, bypass cache and generate a new description (default: false)"
+                        }
+                    },
+                    "required": ["image_path"]
+                }),
+            },
+        },
     ]
 }
 
@@ -1568,6 +1747,14 @@ pub fn classify_tool(tool_name: &str) -> ToolLocation {
 
         // Generic FVTT tools
         "fvtt_read" | "fvtt_write" | "fvtt_query" | "dice_roll" => ToolLocation::External,
+
+        // Asset browsing and image description (two-phase external)
+        "fvtt_assets_browse" | "image_describe" => ToolLocation::External,
+
+        // Folder management
+        "list_folders" | "create_folder" | "update_folder" | "delete_folder" => {
+            ToolLocation::External
+        }
 
         // Scene CRUD
         "create_scene" | "get_scene" | "update_scene" | "delete_scene" | "list_scenes" => {
