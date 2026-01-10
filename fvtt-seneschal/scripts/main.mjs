@@ -1469,7 +1469,14 @@ class ToolExecutor {
         return FvttApiWrapper.getSystemCapabilities();
 
       case "create_scene":
-        return FvttApiWrapper.createScene(args.name, args.image_path, args.width, args.height, args.grid_size, userContext);
+        return FvttApiWrapper.createScene(
+          args.name,
+          args.image_path,
+          args.width,
+          args.height,
+          args.grid_size,
+          userContext
+        );
 
       default:
         return { error: `Unknown tool: ${tool}` };
