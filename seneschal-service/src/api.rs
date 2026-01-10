@@ -800,8 +800,8 @@ async fn deliver_image_handler(
             })
         })?;
 
-    // Determine FVTT path
-    let fvtt_path = request.target_path.unwrap_or_else(|| {
+    // Determine path relative to FVTT assets directory (for filesystem operations)
+    let relative_path = request.target_path.unwrap_or_else(|| {
         IngestionService::fvtt_image_path(
             &image.document_title,
             image.image.page_number,
@@ -811,11 +811,14 @@ async fn deliver_image_handler(
         .to_string()
     });
 
+    // The FVTT path is what FVTT uses to reference the file (prepend assets/)
+    let fvtt_path = format!("assets/{}", relative_path);
+
     // Check if we can write directly
     match state.service.config.fvtt.check_assets_access() {
         AssetsAccess::Direct(assets_dir) => {
             // Create target directory
-            let full_path = assets_dir.join(&fvtt_path);
+            let full_path = assets_dir.join(&relative_path);
             if let Some(parent) = full_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| {
                     state.i18n_error(ServiceError::Processing(crate::error::ProcessingError::Io(

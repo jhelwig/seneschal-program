@@ -181,9 +181,12 @@ impl FvttConfig {
         match &self.assets_path {
             None => AssetsAccess::Shuttle,
             Some(path) => {
+                // Test write access by creating the seneschal directory
                 let seneschal_dir = path.join("seneschal");
                 match std::fs::create_dir_all(&seneschal_dir) {
-                    Ok(_) => AssetsAccess::Direct(seneschal_dir),
+                    // Return the base assets path, not the seneschal subdir
+                    // The fvtt_image_path function includes seneschal/ in its output
+                    Ok(_) => AssetsAccess::Direct(path.clone()),
                     Err(e) => {
                         tracing::warn!(
                             path = %seneschal_dir.display(),

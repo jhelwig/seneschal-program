@@ -1000,8 +1000,9 @@ impl SeneschalService {
                     Err(e) => return ToolResult::error(call.id.clone(), e.to_string()),
                 };
 
-                // Determine the FVTT path
-                let fvtt_path = target_path.unwrap_or_else(|| {
+                // Determine the path relative to the FVTT assets directory
+                // This is used for filesystem operations (joining with assets_dir)
+                let relative_path = target_path.unwrap_or_else(|| {
                     IngestionService::fvtt_image_path(
                         &img.document_title,
                         img.image.page_number,
@@ -1011,11 +1012,14 @@ impl SeneschalService {
                     .to_string()
                 });
 
+                // The FVTT path is what FVTT uses to reference the file (prepend assets/)
+                let fvtt_path = format!("assets/{}", relative_path);
+
                 // Check assets access mode
                 match self.config.fvtt.check_assets_access() {
                     AssetsAccess::Direct(assets_dir) => {
                         // Create target directory
-                        let full_path = assets_dir.join(&fvtt_path);
+                        let full_path = assets_dir.join(&relative_path);
                         if let Some(parent) = full_path.parent()
                             && let Err(e) = std::fs::create_dir_all(parent)
                         {

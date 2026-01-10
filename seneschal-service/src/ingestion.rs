@@ -2226,7 +2226,11 @@ impl IngestionService {
         Ok(all_document_images)
     }
 
-    /// Get the path where an image should be copied to in FVTT assets
+    /// Get the path where an image should be copied to in FVTT assets.
+    ///
+    /// Returns a path relative to the FVTT assets directory (e.g., `seneschal/Doc_Title/page_1.webp`).
+    /// When returning this path to the LLM for use in FVTT documents, prepend `assets/` to make
+    /// it a valid FVTT reference path (e.g., `assets/seneschal/Doc_Title/page_1.webp`).
     pub fn fvtt_image_path(
         document_title: &str,
         page_number: i32,
@@ -2243,7 +2247,7 @@ impl IngestionService {
             .unwrap_or_default();
 
         PathBuf::from(format!(
-            "assets/seneschal/{}/page_{}{}.webp",
+            "seneschal/{}/page_{}{}.webp",
             sanitized_title, page_number, sanitized_desc
         ))
     }
@@ -2558,17 +2562,18 @@ Another chapter.
 
     #[test]
     fn test_fvtt_image_path() {
-        // Note: The assets/seneschal/ prefix is included in the path for FVTT compatibility
+        // Returns path relative to FVTT assets directory (no assets/ prefix)
+        // The assets/ prefix is added when returning the path to the LLM
         let path = IngestionService::fvtt_image_path("Core Rulebook", 42, Some("starship map"));
         assert_eq!(
             path.to_string_lossy(),
-            "assets/seneschal/Core_Rulebook/page_42_starship_map.webp"
+            "seneschal/Core_Rulebook/page_42_starship_map.webp"
         );
 
         let path_no_desc = IngestionService::fvtt_image_path("Test Doc", 1, None);
         assert_eq!(
             path_no_desc.to_string_lossy(),
-            "assets/seneschal/Test_Doc/page_1.webp"
+            "seneschal/Test_Doc/page_1.webp"
         );
     }
 }

@@ -716,7 +716,7 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
                 name: "image_deliver".to_string(),
-                description: "Copy an image to the Foundry VTT assets directory so it can be used in scenes, actors, etc. Returns the FVTT path to use.".to_string(),
+                description: "Copy an image to the Foundry VTT assets directory so it can be used in scenes, actors, etc. Returns the full FVTT path (starting with 'assets/') to use in documents.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -726,7 +726,7 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                         },
                         "target_path": {
                             "type": "string",
-                            "description": "Optional: custom path within FVTT assets (default: auto-generated from document title and page)"
+                            "description": "Optional: path relative to the assets directory, e.g., 'seneschal/tokens/guard.webp'. Do NOT include 'assets/' prefix. Default: auto-generated as 'seneschal/{doc_title}/page_{N}.webp'"
                         }
                     },
                     "required": ["image_id"]
