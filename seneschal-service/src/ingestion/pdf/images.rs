@@ -23,7 +23,7 @@ use crate::error::{ProcessingError, ServiceResult};
 
 use compositing::{
     ImageInfo, Rectangle, build_cross_page_groups, composite_group,
-    extract_image_transforms_with_qpdf, find_matching_transform, is_grayscale_rgb_data,
+    extract_image_transforms_with_qpdf, find_matching_transform,
 };
 
 /// Extract images from a PDF document and save them as WebP files.
@@ -144,21 +144,11 @@ pub fn extract_pdf_images(
             // Determine image type from format
             // CAIRO_FORMAT_ARGB32 = 0
             // CAIRO_FORMAT_RGB24 = 1
-            // CAIRO_FORMAT_A8 = 2 (grayscale/alpha-only - typically SMask data)
-            let has_alpha = match format {
-                0 => true,  // ARGB32 - color with alpha
-                1 => false, // RGB24 - color, no alpha
-                2 => {
-                    // A8 format is alpha-only data, typically used for SMask
-                    // These are not standalone images - they provide transparency
-                    // for other images and should be applied via SMask extraction
-                    trace!(
-                        page = page_num + 1,
-                        image_id = image_id,
-                        "Skipping A8 format image (probable SMask)"
-                    );
-                    continue;
-                }
+            // CAIRO_FORMAT_A8 = 2 (grayscale)
+            let (has_alpha, is_grayscale) = match format {
+                0 => (true, false),  // ARGB32
+                1 => (false, false), // RGB24
+                2 => (false, true),  // A8 (grayscale)
                 _ => {
                     debug!(
                         page = page_num + 1,
@@ -187,19 +177,6 @@ pub fn extract_pdf_images(
 
             let data_len = (stride * height) as usize;
             let surface_data = unsafe { std::slice::from_raw_parts(data_ptr, data_len).to_vec() };
-
-            // Skip grayscale images - these are typically SMask data that Poppler
-            // has converted to RGB format. They should not be extracted as standalone
-            // images; they're meant to provide transparency for other images.
-            if is_grayscale_rgb_data(&surface_data, width, height, stride) {
-                trace!(
-                    page = page_num + 1,
-                    image_id = image_id,
-                    size = format!("{}x{}", width, height),
-                    "Skipping grayscale image (probable SMask converted to RGB)"
-                );
-                continue;
-            }
 
             // Calculate scale factors from PDF points to pixels
             let bounds_width = area.width();
@@ -347,6 +324,7 @@ pub fn extract_pdf_images(
                 height,
                 stride,
                 has_alpha,
+                is_grayscale,
                 scale_x,
                 scale_y,
                 page_number: page_num as usize,

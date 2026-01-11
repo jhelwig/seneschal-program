@@ -51,6 +51,7 @@ pub struct ImageInfo {
     pub height: i32,
     pub stride: i32,
     pub has_alpha: bool,
+    pub is_grayscale: bool,
     /// Scale factor from PDF points to pixels (width)
     pub scale_x: f64,
     /// Scale factor from PDF points to pixels (height)
@@ -430,52 +431,25 @@ fn calculate_centroid_page(all_images: &[ImageInfo], indices: &[usize]) -> usize
     ref_page + page_offset
 }
 
-/// Check if image data represents a grayscale image (R=G=B for all pixels)
-/// This detects SMask images that Poppler has converted to RGB format
-/// Returns true if the image appears to be grayscale data
-pub fn is_grayscale_rgb_data(surface_data: &[u8], width: i32, height: i32, stride: i32) -> bool {
-    // Sample pixels to check if R=G=B
-    // We don't need to check every pixel - sampling is sufficient
-    let sample_step = ((width * height) as usize / 100).max(1); // Check ~100 pixels
-    // Both ARGB32 and RGB24 use 4 bytes per pixel in Cairo
-    let bytes_per_pixel = 4;
-
-    let mut samples_checked = 0;
-    let mut grayscale_count = 0;
-
-    for y in (0..height).step_by(sample_step.max(1)) {
-        for x in (0..width).step_by(sample_step.max(1)) {
-            let offset = (y * stride + x * bytes_per_pixel) as usize;
-            if offset + 3 >= surface_data.len() {
-                continue;
-            }
-
-            // Cairo format: BGRA on little-endian
-            let b = surface_data[offset];
-            let g = surface_data[offset + 1];
-            let r = surface_data[offset + 2];
-
-            samples_checked += 1;
-
-            // Check if R=G=B (within small tolerance for compression artifacts)
-            let max_diff = r.abs_diff(g).max(g.abs_diff(b)).max(r.abs_diff(b));
-            if max_diff <= 2 {
-                grayscale_count += 1;
-            }
-        }
-    }
-
-    // If >95% of sampled pixels are grayscale, consider the whole image grayscale
-    samples_checked > 0 && (grayscale_count as f64 / samples_checked as f64) > 0.95
-}
-
 /// Convert an ImageInfo to an RGBA image
 pub fn convert_to_rgba(info: &ImageInfo) -> RgbaImage {
     let width = info.width as u32;
     let height = info.height as u32;
     let mut img = RgbaImage::new(width, height);
 
-    if info.has_alpha {
+    if info.is_grayscale {
+        // Grayscale A8 format -> RGBA (gray, gray, gray, 255)
+        // Cairo A8 stores alpha values, but for grayscale images we treat them as gray values
+        for y in 0..height {
+            for x in 0..width {
+                let offset = (y as i32 * info.stride + x as i32) as usize;
+                if offset < info.surface_data.len() {
+                    let gray = info.surface_data[offset];
+                    img.put_pixel(x, y, image::Rgba([gray, gray, gray, 255]));
+                }
+            }
+        }
+    } else if info.has_alpha {
         // ARGB32 (Cairo premultiplied format) -> RGBA
         // Cairo ARGB32 is stored as 32-bit native-endian with alpha in highest byte
         // On little-endian systems: BGRA byte order
