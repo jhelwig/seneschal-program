@@ -26,6 +26,7 @@ config = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }
+rootcause = { workspace = true }
 
 # Database
 rusqlite = { workspace = true }

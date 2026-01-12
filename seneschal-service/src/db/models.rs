@@ -226,6 +226,37 @@ pub struct ConversationMetadata {
     pub total_tokens_estimate: u32,
 }
 
+/// Image type classification
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageType {
+    /// Standard extracted image
+    #[default]
+    Individual,
+    /// Background image (appears on multiple pages, extracted once)
+    Background,
+    /// Rendered page region for overlapping content
+    RegionRender,
+}
+
+impl ImageType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ImageType::Individual => "individual",
+            ImageType::Background => "background",
+            ImageType::RegionRender => "region_render",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "background" => ImageType::Background,
+            "region_render" => ImageType::RegionRender,
+            _ => ImageType::Individual,
+        }
+    }
+}
+
 /// Document image record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentImage {
@@ -240,6 +271,15 @@ pub struct DocumentImage {
     pub description: Option<String>,
     /// Pages this image spans (for cross-page composites). JSON array stored as TEXT.
     pub source_pages: Option<Vec<i32>>,
+    /// Type of image (individual, background, or region render)
+    #[serde(default)]
+    pub image_type: ImageType,
+    /// ID of the source individual image if this is a region render
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_image_id: Option<String>,
+    /// Whether this image has an associated region render
+    #[serde(default)]
+    pub has_region_render: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -248,6 +288,9 @@ impl DocumentImage {
         let created_at_str: String = row.get(9)?;
         let source_pages_json: Option<String> = row.get(10)?;
         let source_pages = source_pages_json.and_then(|s| serde_json::from_str(&s).ok());
+        let image_type_str: String = row.get(11)?;
+        let source_image_id: Option<String> = row.get(12)?;
+        let has_region_render: bool = row.get(13)?;
 
         Ok(Self {
             id: row.get(0)?,
@@ -260,6 +303,9 @@ impl DocumentImage {
             height: row.get::<_, Option<i32>>(7)?.map(|v| v as u32),
             description: row.get(8)?,
             source_pages,
+            image_type: ImageType::from_str(&image_type_str),
+            source_image_id,
+            has_region_render,
             created_at: DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),

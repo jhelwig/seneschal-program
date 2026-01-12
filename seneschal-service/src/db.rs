@@ -2,8 +2,8 @@ mod models;
 
 pub use models::{
     Chunk, Conversation, ConversationMessage, ConversationMetadata, Document, DocumentImage,
-    DocumentImageWithAccess, FvttImageDescription, MessageRole, ProcessingStatus, ToolCallRecord,
-    ToolResultRecord,
+    DocumentImageWithAccess, FvttImageDescription, ImageType, MessageRole, ProcessingStatus,
+    ToolCallRecord, ToolResultRecord,
 };
 
 use chrono::{DateTime, Utc};
@@ -136,7 +136,11 @@ impl Database {
                 height INTEGER,
                 description TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(document_id, page_number, image_index),
+                source_pages TEXT,
+                image_type TEXT NOT NULL DEFAULT 'individual',
+                source_image_id TEXT,
+                has_region_render INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(document_id, page_number, image_index, image_type),
                 FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
             );
 
@@ -219,6 +223,63 @@ impl Database {
             )
             .map_err(|e| DatabaseError::Migration {
                 message: format!("Failed to add source_pages column: {}", e),
+            })?;
+        }
+
+        // Migration: Add image_type, source_image_id, has_region_render columns to document_images
+        // and update the unique constraint to include image_type
+        let has_image_type: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('document_images') WHERE name='image_type'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+            > 0;
+
+        if !has_image_type {
+            // Need to recreate the table to update the UNIQUE constraint
+            // SQLite doesn't support ALTER TABLE to modify constraints
+            conn.execute_batch(
+                r#"
+                -- Create new table with updated schema
+                CREATE TABLE document_images_new (
+                    id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    page_number INTEGER NOT NULL,
+                    image_index INTEGER NOT NULL,
+                    internal_path TEXT NOT NULL,
+                    mime_type TEXT NOT NULL DEFAULT 'image/webp',
+                    width INTEGER,
+                    height INTEGER,
+                    description TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    source_pages TEXT,
+                    image_type TEXT NOT NULL DEFAULT 'individual',
+                    source_image_id TEXT,
+                    has_region_render INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(document_id, page_number, image_index, image_type),
+                    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+                );
+
+                -- Copy existing data
+                INSERT INTO document_images_new (id, document_id, page_number, image_index, internal_path, mime_type, width, height, description, created_at, source_pages)
+                SELECT id, document_id, page_number, image_index, internal_path, mime_type, width, height, description, created_at, source_pages
+                FROM document_images;
+
+                -- Drop old table
+                DROP TABLE document_images;
+
+                -- Rename new table
+                ALTER TABLE document_images_new RENAME TO document_images;
+
+                -- Recreate indexes
+                CREATE INDEX IF NOT EXISTS idx_document_images_document ON document_images(document_id);
+                CREATE INDEX IF NOT EXISTS idx_document_images_source ON document_images(source_image_id);
+                "#,
+            )
+            .map_err(|e| DatabaseError::Migration {
+                message: format!("Failed to migrate document_images table: {}", e),
             })?;
         }
 
@@ -905,8 +966,8 @@ impl Database {
 
         conn.execute(
             r#"
-            INSERT INTO document_images (id, document_id, page_number, image_index, internal_path, mime_type, width, height, description, created_at, source_pages)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            INSERT INTO document_images (id, document_id, page_number, image_index, internal_path, mime_type, width, height, description, created_at, source_pages, image_type, source_image_id, has_region_render)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
             "#,
             params![
                 image.id,
@@ -920,6 +981,9 @@ impl Database {
                 image.description,
                 image.created_at.to_rfc3339(),
                 source_pages_json,
+                image.image_type.as_str(),
+                image.source_image_id,
+                image.has_region_render,
             ],
         )
         .map_err(DatabaseError::Query)?;
@@ -950,7 +1014,8 @@ impl Database {
             r#"
             SELECT di.id, di.document_id, di.page_number, di.image_index, di.internal_path,
                    di.mime_type, di.width, di.height, di.description, di.created_at,
-                   di.source_pages, d.title, d.access_level
+                   di.source_pages, di.image_type, di.source_image_id, di.has_region_render,
+                   d.title, d.access_level
             FROM document_images di
             JOIN documents d ON di.document_id = d.id
             WHERE di.id = ?1
@@ -958,10 +1023,10 @@ impl Database {
             params![id],
             |row| {
                 let image = DocumentImage::from_row(row)?;
-                let access_level_u8: u8 = row.get(12)?;
+                let access_level_u8: u8 = row.get(15)?;
                 Ok(DocumentImageWithAccess {
                     image,
-                    document_title: row.get(11)?,
+                    document_title: row.get(14)?,
                     access_level: AccessLevel::from_u8(access_level_u8),
                 })
             },
@@ -986,7 +1051,8 @@ impl Database {
             r#"
             SELECT di.id, di.document_id, di.page_number, di.image_index, di.internal_path,
                    di.mime_type, di.width, di.height, di.description, di.created_at,
-                   di.source_pages, d.title, d.access_level
+                   di.source_pages, di.image_type, di.source_image_id, di.has_region_render,
+                   d.title, d.access_level
             FROM document_images di
             JOIN documents d ON di.document_id = d.id
             WHERE d.access_level <= ?1
@@ -1032,10 +1098,10 @@ impl Database {
         let rows = stmt
             .query_map(params_refs.as_slice(), |row| {
                 let image = DocumentImage::from_row(row)?;
-                let access_level_u8: u8 = row.get(12)?;
+                let access_level_u8: u8 = row.get(15)?;
                 Ok(DocumentImageWithAccess {
                     image,
-                    document_title: row.get(11)?,
+                    document_title: row.get(14)?,
                     access_level: AccessLevel::from_u8(access_level_u8),
                 })
             })
@@ -1060,7 +1126,8 @@ impl Database {
                 r#"
                 SELECT di.id, di.document_id, di.page_number, di.image_index, di.internal_path,
                        di.mime_type, di.width, di.height, di.description, di.created_at,
-                       di.source_pages, d.title, d.access_level, e.embedding
+                       di.source_pages, di.image_type, di.source_image_id, di.has_region_render,
+                       d.title, d.access_level, e.embedding
                 FROM document_images di
                 JOIN documents d ON di.document_id = d.id
                 JOIN document_image_embeddings e ON di.id = e.image_id
@@ -1072,12 +1139,12 @@ impl Database {
         let rows = stmt
             .query_map(params![max_access_level], |row| {
                 let image = DocumentImage::from_row(row)?;
-                let access_level_u8: u8 = row.get(12)?;
-                let embedding_bytes: Vec<u8> = row.get(13)?;
+                let access_level_u8: u8 = row.get(15)?;
+                let embedding_bytes: Vec<u8> = row.get(16)?;
                 Ok((
                     DocumentImageWithAccess {
                         image,
-                        document_title: row.get(11)?,
+                        document_title: row.get(14)?,
                         access_level: AccessLevel::from_u8(access_level_u8),
                     },
                     embedding_bytes,
@@ -1113,7 +1180,8 @@ impl Database {
             .prepare(
                 r#"
                 SELECT id, document_id, page_number, image_index, internal_path,
-                       mime_type, width, height, description, created_at, source_pages
+                       mime_type, width, height, description, created_at, source_pages,
+                       image_type, source_image_id, has_region_render
                 FROM document_images
                 WHERE document_id = ?1
                 ORDER BY page_number, image_index
@@ -1499,7 +1567,8 @@ impl Database {
             .prepare(
                 r#"
                 SELECT id, document_id, page_number, image_index, internal_path,
-                       mime_type, width, height, description, created_at, source_pages
+                       mime_type, width, height, description, created_at, source_pages,
+                       image_type, source_image_id, has_region_render
                 FROM document_images
                 WHERE document_id = ?1 AND (description IS NULL OR description = '')
                 ORDER BY page_number, image_index
@@ -1508,26 +1577,7 @@ impl Database {
             .map_err(DatabaseError::Query)?;
 
         let images: Vec<DocumentImage> = stmt
-            .query_map(params![document_id], |row| {
-                let created_at_str: String = row.get(9)?;
-                let source_pages_json: Option<String> = row.get(10)?;
-                let source_pages = source_pages_json.and_then(|s| serde_json::from_str(&s).ok());
-                Ok(DocumentImage {
-                    id: row.get(0)?,
-                    document_id: row.get(1)?,
-                    page_number: row.get(2)?,
-                    image_index: row.get(3)?,
-                    internal_path: row.get(4)?,
-                    mime_type: row.get(5)?,
-                    width: row.get(6)?,
-                    height: row.get(7)?,
-                    description: row.get(8)?,
-                    source_pages,
-                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
-                        .map(|dt| dt.with_timezone(&chrono::Utc))
-                        .unwrap_or_else(|_| chrono::Utc::now()),
-                })
-            })
+            .query_map(params![document_id], DocumentImage::from_row)
             .map_err(DatabaseError::Query)?
             .filter_map(|r| r.ok())
             .collect();

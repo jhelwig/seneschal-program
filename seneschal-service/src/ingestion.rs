@@ -15,7 +15,7 @@ use chrono::Utc;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::config::EmbeddingsConfig;
+use crate::config::{EmbeddingsConfig, ImageExtractionConfig};
 use crate::db::{Chunk, DocumentImage};
 use crate::error::{ProcessingError, ServiceError, ServiceResult};
 use crate::tools::AccessLevel;
@@ -37,14 +37,20 @@ pub struct IngestionService {
     chunk_size: usize,
     chunk_overlap: usize,
     data_dir: PathBuf,
+    image_extraction_config: ImageExtractionConfig,
 }
 
 impl IngestionService {
-    pub fn new(config: &EmbeddingsConfig, data_dir: PathBuf) -> Self {
+    pub fn new(
+        embeddings_config: &EmbeddingsConfig,
+        image_extraction_config: ImageExtractionConfig,
+        data_dir: PathBuf,
+    ) -> Self {
         Self {
-            chunk_size: config.chunk_size,
-            chunk_overlap: config.chunk_overlap,
+            chunk_size: embeddings_config.chunk_size,
+            chunk_overlap: embeddings_config.chunk_overlap,
             data_dir,
+            image_extraction_config,
         }
     }
 
@@ -106,7 +112,12 @@ impl IngestionService {
         document_id: &str,
     ) -> ServiceResult<Vec<DocumentImage>> {
         let images_dir = self.data_dir.join("images").join(document_id);
-        pdf::extract_pdf_images(path, document_id, &images_dir)
+        pdf::extract_pdf_images(
+            path,
+            document_id,
+            &images_dir,
+            &self.image_extraction_config,
+        )
     }
 
     /// Extract text from specific pages of a PDF.
@@ -218,6 +229,7 @@ impl IngestionService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ImageExtractionConfig;
 
     #[test]
     fn test_chunk_text() {
@@ -225,6 +237,7 @@ mod tests {
             chunk_size: 10,
             chunk_overlap: 2,
             data_dir: PathBuf::from("/tmp"),
+            image_extraction_config: ImageExtractionConfig::default(),
         };
 
         let text = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen";

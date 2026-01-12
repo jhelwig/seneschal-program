@@ -3,10 +3,37 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use rootcause::compat::IntoRootcause;
 use serde::Serialize;
 use thiserror::Error;
 
 use crate::i18n::I18n;
+
+/// Format an error with its full cause chain for logging.
+///
+/// Uses rootcause to provide formatted error chain output with proper
+/// context display for debugging. This is available for owned errors.
+#[allow(dead_code)]
+pub fn format_error_chain<E: std::error::Error + Send + Sync + 'static>(error: E) -> String {
+    let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(error);
+    let report = boxed.into_rootcause();
+    format!("{report}")
+}
+
+/// Format an error reference with its full cause chain for logging.
+///
+/// Walks the error chain via `std::error::Error::source()` and formats
+/// each cause on a separate line.
+pub fn format_error_chain_ref(error: &dyn std::error::Error) -> String {
+    let mut result = error.to_string();
+    let mut current = error.source();
+    while let Some(cause) = current {
+        result.push_str("\n  Caused by: ");
+        result.push_str(&cause.to_string());
+        current = cause.source();
+    }
+    result
+}
 
 /// Main service error type
 #[derive(Error, Debug)]

@@ -32,6 +32,9 @@ pub struct AppConfig {
 
     #[serde(default = "default_conversation")]
     pub conversation: ConversationConfig,
+
+    #[serde(default = "default_image_extraction")]
+    pub image_extraction: ImageExtractionConfig,
 }
 
 /// HTTP server configuration
@@ -154,6 +157,33 @@ impl ConversationConfig {
 
     pub fn cleanup_interval(&self) -> Duration {
         Duration::from_secs(self.cleanup_interval_secs)
+    }
+}
+
+/// Image extraction configuration
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImageExtractionConfig {
+    /// Threshold for background image detection (0.0-1.0).
+    /// Images covering at least this fraction of a page's area are candidates for background detection.
+    #[serde(default = "default_background_area_threshold")]
+    pub background_area_threshold: f64,
+
+    /// Minimum number of pages an image must appear on to be considered a background.
+    #[serde(default = "default_background_min_pages")]
+    pub background_min_pages: usize,
+
+    /// Minimum DPI for region renders that include text or vector overlaps.
+    #[serde(default = "default_text_overlap_min_dpi")]
+    pub text_overlap_min_dpi: f64,
+}
+
+impl Default for ImageExtractionConfig {
+    fn default() -> Self {
+        Self {
+            background_area_threshold: default_background_area_threshold(),
+            background_min_pages: default_background_min_pages(),
+            text_overlap_min_dpi: default_text_overlap_min_dpi(),
+        }
     }
 }
 
@@ -340,6 +370,26 @@ fn default_cleanup_interval_secs() -> u64 {
 
 fn default_max_per_user() -> u32 {
     100
+}
+
+fn default_image_extraction() -> ImageExtractionConfig {
+    ImageExtractionConfig {
+        background_area_threshold: default_background_area_threshold(),
+        background_min_pages: default_background_min_pages(),
+        text_overlap_min_dpi: default_text_overlap_min_dpi(),
+    }
+}
+
+fn default_background_area_threshold() -> f64 {
+    0.9
+}
+
+fn default_background_min_pages() -> usize {
+    2
+}
+
+fn default_text_overlap_min_dpi() -> f64 {
+    300.0
 }
 
 impl AppConfig {

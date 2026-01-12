@@ -28,6 +28,7 @@ config = "0.15"
 
 # Error handling
 thiserror = "2.0"
+rootcause = "0.11"
 
 # Database
 rusqlite = { version = "0.33", features = ["bundled"] }

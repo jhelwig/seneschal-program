@@ -15,7 +15,7 @@ use crate::db::{
     Conversation, ConversationMessage, ConversationMetadata, Database, Document,
     FvttImageDescription, MessageRole, ProcessingStatus, ToolCallRecord, ToolResultRecord,
 };
-use crate::error::{ServiceError, ServiceResult};
+use crate::error::{ServiceError, ServiceResult, format_error_chain_ref};
 use crate::i18n::I18n;
 use crate::ingestion::IngestionService;
 use crate::ollama::{
@@ -77,6 +77,7 @@ impl SeneschalService {
         // Initialize ingestion service
         let ingestion = Arc::new(IngestionService::new(
             &config.embeddings,
+            config.image_extraction.clone(),
             config.storage.data_dir.clone(),
         ));
 
@@ -1894,7 +1895,7 @@ impl SeneschalService {
                             if let Err(e) = self.db.insert_document_image(image) {
                                 warn!(
                                     image_id = %image.id,
-                                    error = %e,
+                                    error = %format_error_chain_ref(&e),
                                     "Failed to save document image to database"
                                 );
                             }
@@ -1902,7 +1903,7 @@ impl SeneschalService {
                         info!(doc_id = %doc_id, images = image_count, "Images extracted");
                     }
                     Err(e) => {
-                        warn!(doc_id = %doc_id, error = %e, "Failed to extract images from PDF");
+                        warn!(doc_id = %doc_id, error = %format_error_chain_ref(&e), "Failed to extract images from PDF");
                     }
                 }
             } else {
