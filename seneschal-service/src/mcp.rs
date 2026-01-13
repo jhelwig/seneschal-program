@@ -1,20 +1,23 @@
 //! MCP (Model Context Protocol) server implementation.
 //!
 //! This module provides an MCP-compatible interface for external LLM tools
-//! to interact with the Seneschal service.
+//! to interact with the Seneschal service. Implements the Streamable HTTP
+//! transport from the 2025-03-26 specification.
 
+use axum::body::Bytes;
 use axum::{
     Json, Router,
     extract::State,
-    response::{Sse, sse::Event},
-    routing::get,
+    http::{HeaderMap, Method, StatusCode, header},
+    response::{IntoResponse, Response, Sse, sse::Event},
 };
-use futures::stream::{self, Stream};
+use futures::stream;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use crate::service::SeneschalService;
 
@@ -30,80 +33,162 @@ pub struct McpState {
 }
 
 /// Build the MCP router
+///
+/// The Streamable HTTP transport uses a single endpoint supporting both
+/// GET (for SSE streams) and POST (for JSON-RPC messages).
+///
+/// Uses fallback to handle both `/mcp` and `/mcp/` paths when nested.
 pub fn mcp_router(service: Arc<SeneschalService>) -> Router {
     let state = Arc::new(McpState { service });
 
+    // Use fallback to handle the root path regardless of trailing slash
     Router::new()
-        .route("/", get(mcp_sse_handler))
-        .route("/messages", axum::routing::post(mcp_message_handler))
+        .fallback(mcp_fallback_handler)
         .with_state(state)
 }
 
-/// MCP SSE handler - implements the MCP protocol over SSE
-async fn mcp_sse_handler(
-    State(_state): State<Arc<McpState>>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    info!("MCP client connected");
-
-    // Send server info as first event
-    let server_info = McpServerInfo {
-        protocol_version: "2024-11-05".to_string(),
-        capabilities: McpCapabilities {
-            tools: Some(McpToolsCapability { list_changed: false }),
-            resources: None,
-            prompts: None,
-        },
-        server_info: McpImplementation {
-            name: "seneschal-service".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        },
-        instructions: Some(
-            "Seneschal Program MCP server for game master assistance, document search, and Foundry VTT integration.".to_string()
-        ),
-    };
-
-    let info_json = serde_json::to_string(&McpMessage::ServerInfo(server_info)).unwrap_or_default();
-
-    let stream = stream::once(async move { Ok::<_, Infallible>(Event::default().data(info_json)) });
-
-    Sse::new(stream).keep_alive(
-        axum::response::sse::KeepAlive::new()
-            .interval(Duration::from_secs(30))
-            .text("ping"),
-    )
+/// Fallback handler that dispatches based on HTTP method
+async fn mcp_fallback_handler(
+    State(state): State<Arc<McpState>>,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    match method {
+        Method::GET => mcp_get_handler(State(state), headers).await,
+        Method::POST => {
+            // Parse the JSON body
+            match serde_json::from_slice::<McpRequest>(&body) {
+                Ok(request) => mcp_post_handler(State(state), headers, request).await,
+                Err(e) => {
+                    warn!(error = %e, "Failed to parse MCP request");
+                    let error_response = McpResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: serde_json::Value::Null,
+                        result: None,
+                        error: Some(McpError {
+                            code: -32700,
+                            message: format!("Parse error: {}", e),
+                        }),
+                    };
+                    (StatusCode::BAD_REQUEST, Json(error_response)).into_response()
+                }
+            }
+        }
+        _ => (StatusCode::METHOD_NOT_ALLOWED, "Method not allowed").into_response(),
+    }
 }
 
-/// MCP message handler - handles JSON-RPC style requests
-async fn mcp_message_handler(
+/// Handle GET requests - opens SSE stream for server-initiated messages
+///
+/// Per the Streamable HTTP spec, GET opens an SSE stream for the server
+/// to send notifications and requests to the client. Since we don't
+/// currently have server-initiated messages, we keep the stream open
+/// with keep-alive pings.
+async fn mcp_get_handler(State(_state): State<Arc<McpState>>, headers: HeaderMap) -> Response {
+    // Check Accept header
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !accept.contains("text/event-stream") {
+        return (
+            StatusCode::NOT_ACCEPTABLE,
+            "Accept header must include text/event-stream",
+        )
+            .into_response();
+    }
+
+    info!("MCP SSE stream opened");
+
+    // Create an empty stream that stays open via keep-alive
+    let stream = stream::pending::<Result<Event, Infallible>>();
+
+    Sse::new(stream)
+        .keep_alive(
+            axum::response::sse::KeepAlive::new()
+                .interval(Duration::from_secs(30))
+                .text(":ping"),
+        )
+        .into_response()
+}
+
+/// Handle POST requests - processes JSON-RPC messages
+///
+/// Per the Streamable HTTP spec, POST receives JSON-RPC requests and
+/// returns responses. The response is always JSON for our implementation
+/// since we don't need streaming responses for tool calls.
+async fn mcp_post_handler(
     State(state): State<Arc<McpState>>,
-    Json(request): Json<McpRequest>,
-) -> Json<McpResponse> {
+    headers: HeaderMap,
+    request: McpRequest,
+) -> Response {
     debug!(method = %request.method, "MCP request received");
 
+    // Log session ID if provided
+    if let Some(session_id) = headers.get("mcp-session-id") {
+        debug!(session_id = ?session_id, "Request includes session ID");
+    }
+
     let result = match request.method.as_str() {
-        "initialize" => handle_initialize(&state).await,
-        "tools/list" => handle_tools_list(&state).await,
-        "tools/call" => handle_tool_call(&state, request.params).await,
-        _ => Err(McpError {
-            code: -32601,
-            message: format!("Method not found: {}", request.method),
-        }),
+        "initialize" => {
+            info!("MCP client initializing");
+            handle_initialize(&state).await
+        }
+        "notifications/initialized" => {
+            // Client acknowledgment - no response needed
+            debug!("MCP client initialized notification received");
+            Ok(serde_json::json!({}))
+        }
+        "tools/list" => {
+            debug!("MCP tools/list request");
+            handle_tools_list(&state).await
+        }
+        "tools/call" => {
+            debug!("MCP tools/call request");
+            handle_tool_call(&state, request.params).await
+        }
+        "ping" => {
+            debug!("MCP ping request");
+            Ok(serde_json::json!({}))
+        }
+        _ => {
+            warn!(method = %request.method, "Unknown MCP method");
+            Err(McpError {
+                code: -32601,
+                message: format!("Method not found: {}", request.method),
+            })
+        }
     };
 
-    match result {
-        Ok(data) => Json(McpResponse {
+    // Build response
+    let response = match result {
+        Ok(data) => McpResponse {
             jsonrpc: "2.0".to_string(),
             id: request.id,
             result: Some(data),
             error: None,
-        }),
-        Err(error) => Json(McpResponse {
+        },
+        Err(error) => McpResponse {
             jsonrpc: "2.0".to_string(),
             id: request.id,
             result: None,
             error: Some(error),
-        }),
+        },
+    };
+
+    // For initialize requests, generate and include session ID
+    let mut headers = HeaderMap::new();
+    if request.method == "initialize" {
+        let session_id = Uuid::new_v4().to_string();
+        if let Ok(value) = session_id.parse() {
+            headers.insert("mcp-session-id", value);
+            debug!(session_id = %session_id, "Generated new MCP session");
+        }
     }
+
+    (StatusCode::OK, headers, Json(response)).into_response()
 }
 
 // === MCP Protocol Types ===
@@ -111,6 +196,7 @@ async fn mcp_message_handler(
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct McpRequest {
     pub jsonrpc: String,
+    #[serde(default)]
     pub id: serde_json::Value,
     pub method: String,
     #[serde(default)]
@@ -120,6 +206,7 @@ pub(crate) struct McpRequest {
 #[derive(Debug, Serialize)]
 pub(crate) struct McpResponse {
     pub jsonrpc: String,
+    #[serde(skip_serializing_if = "serde_json::Value::is_null")]
     pub id: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
@@ -131,44 +218,6 @@ pub(crate) struct McpResponse {
 pub(crate) struct McpError {
     pub code: i32,
     pub message: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-enum McpMessage {
-    ServerInfo(McpServerInfo),
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct McpServerInfo {
-    protocol_version: String,
-    capabilities: McpCapabilities,
-    server_info: McpImplementation,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    instructions: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct McpCapabilities {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<McpToolsCapability>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    resources: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prompts: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct McpToolsCapability {
-    list_changed: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct McpImplementation {
-    name: String,
-    version: String,
 }
 
 #[derive(Debug, Serialize)]
