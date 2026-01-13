@@ -124,17 +124,17 @@ export class ToolExecutor {
       case "list_items":
         return FvttApiWrapper.listDocuments("item", args, userContext);
 
-      // Journal Entry CRUD
-      case "create_journal_entry":
-        return FvttApiWrapper.createJournalEntry(args, userContext);
+      // Journal CRUD
+      case "create_journal":
+        return FvttApiWrapper.createJournalEntry(args);
 
-      case "get_journal_entry":
+      case "get_journal":
         return FvttApiWrapper.read("journal_entry", args.journal_id, userContext);
 
-      case "update_journal_entry":
-        return FvttApiWrapper.updateJournalEntry(args, userContext);
+      case "update_journal":
+        return FvttApiWrapper.updateJournalEntry(args);
 
-      case "delete_journal_entry":
+      case "delete_journal":
         return FvttApiWrapper.write(
           "journal_entry",
           "delete",
@@ -142,8 +142,21 @@ export class ToolExecutor {
           userContext
         );
 
-      case "list_journal_entries":
+      case "list_journals":
         return FvttApiWrapper.listDocuments("journal_entry", args, userContext);
+
+      // Journal Page CRUD
+      case "add_journal_page":
+        return FvttApiWrapper.addJournalPage(args);
+
+      case "update_journal_page":
+        return FvttApiWrapper.updateJournalPage(args);
+
+      case "delete_journal_page":
+        return FvttApiWrapper.deleteJournalPage(args);
+
+      case "list_journal_pages":
+        return FvttApiWrapper.listJournalPages(args);
 
       // Rollable Table CRUD
       case "create_rollable_table":

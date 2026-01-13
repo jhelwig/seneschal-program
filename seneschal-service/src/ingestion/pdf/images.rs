@@ -33,8 +33,8 @@ use crate::error::{ProcessingError, ServiceResult};
 
 use background::{ImageSignature, detect_backgrounds, is_background};
 use overlap::{
-    ContentRegion, OverlapGroup, PdfiumImageInfo, calculate_group_region_dpi, detect_overlap_groups,
-    extract_path_regions, extract_pdfium_images, extract_text_regions,
+    ContentRegion, OverlapGroup, PdfiumImageInfo, calculate_group_region_dpi,
+    detect_overlap_groups, extract_path_regions, extract_pdfium_images, extract_text_regions,
 };
 use region_render::render_page_region;
 use transforms::{
@@ -212,8 +212,12 @@ pub fn extract_pdf_images(
                 text_regions = text_regions.len(),
                 path_regions = path_regions.len(),
                 pdfium_images = pdfium_images.len(),
-                media_box = boxes.media_box.map(|b| format!("({:.1},{:.1})-({:.1},{:.1})", b.x1, b.y1, b.x2, b.y2)),
-                crop_box = boxes.crop_box.map(|b| format!("({:.1},{:.1})-({:.1},{:.1})", b.x1, b.y1, b.x2, b.y2)),
+                media_box = boxes
+                    .media_box
+                    .map(|b| format!("({:.1},{:.1})-({:.1},{:.1})", b.x1, b.y1, b.x2, b.y2)),
+                crop_box = boxes
+                    .crop_box
+                    .map(|b| format!("({:.1},{:.1})-({:.1},{:.1})", b.x1, b.y1, b.x2, b.y2)),
                 "Extracted content regions from page"
             );
 
@@ -475,8 +479,14 @@ fn extract_all_image_info(
             trace!(
                 page = page_num + 1,
                 image_id = image_id,
-                raw = format!("({:.1},{:.1})-({:.1},{:.1})", raw_area.x1, raw_area.y1, raw_area.x2, raw_area.y2),
-                converted = format!("({:.1},{:.1})-({:.1},{:.1})", area.x1, area.y1, area.x2, area.y2),
+                raw = format!(
+                    "({:.1},{:.1})-({:.1},{:.1})",
+                    raw_area.x1, raw_area.y1, raw_area.x2, raw_area.y2
+                ),
+                converted = format!(
+                    "({:.1},{:.1})-({:.1},{:.1})",
+                    area.x1, area.y1, area.x2, area.y2
+                ),
                 page_dims = format!("{:.1}x{:.1}", page_width, page_height),
                 "Poppler area"
             );
@@ -593,11 +603,7 @@ fn extract_all_image_info(
                             is_valid = is_valid,
                             "CTM bounds validation"
                         );
-                        if is_valid {
-                            ctm_bounds
-                        } else {
-                            area
-                        }
+                        if is_valid { ctm_bounds } else { area }
                     } else {
                         area
                     };
@@ -774,9 +780,7 @@ fn fix_invalid_image_bounds(
 
         // Get page boxes for coordinate correction
         let boxes = page_boxes.get(&page_num);
-        let crop_offset = boxes.and_then(|b| {
-            b.crop_box.map(|crop| (crop.x1, crop.y1))
-        });
+        let crop_offset = boxes.and_then(|b| b.crop_box.map(|crop| (crop.x1, crop.y1)));
 
         // Try CropBox offset correction first
         if let Some((offset_x, offset_y)) = crop_offset {
@@ -1106,4 +1110,3 @@ fn save_group_region_render(
         created_at,
     })
 }
-

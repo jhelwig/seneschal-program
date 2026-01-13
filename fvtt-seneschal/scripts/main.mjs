@@ -37,7 +37,7 @@ export { saveImageToFVTT } from "./utils.mjs";
 /**
  * Handle one-shot AI query from chat
  */
-async function handleOneShotQuery(query, _chatData) {
+async function handleOneShotQuery(query) {
   const backendClient = new BackendClient();
 
   if (!backendClient.isConfigured()) {
@@ -302,7 +302,7 @@ Hooks.once("renderSidebar", () => {
   console.log(`${MODULE_ID} | Sidebar tab added successfully`);
 });
 
-Hooks.on("chatMessage", (chatLog, message, chatData) => {
+Hooks.on("chatMessage", (_chatLog, message, _chatData) => {
   const prefix = getSetting(SETTINGS.CHAT_COMMAND_PREFIX);
   if (!message.startsWith(prefix + " ")) return true;
 
@@ -312,6 +312,6 @@ Hooks.on("chatMessage", (chatLog, message, chatData) => {
   }
 
   const query = message.slice(prefix.length + 1);
-  handleOneShotQuery(query, chatData);
+  handleOneShotQuery(query);
   return false;
 });

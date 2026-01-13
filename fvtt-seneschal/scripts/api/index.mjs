@@ -756,14 +756,9 @@ export class FvttApiWrapper {
   /**
    * Create a journal entry
    * @param {Object} args - Journal creation arguments
-   * @param {Object} userContext
    * @returns {Promise<Object>}
    */
-  static async createJournalEntry(args, userContext) {
-    if (userContext.role < CONST.USER_ROLES.GAMEMASTER) {
-      return { error: "Only GMs can create journal entries" };
-    }
-
+  static async createJournalEntry(args) {
     try {
       const journalData = {
         name: args.name,
@@ -797,17 +792,12 @@ export class FvttApiWrapper {
   /**
    * Update a journal entry
    * @param {Object} args - Update arguments
-   * @param {Object} userContext
    * @returns {Promise<Object>}
    */
-  static async updateJournalEntry(args, userContext) {
-    if (userContext.role < CONST.USER_ROLES.GAMEMASTER) {
-      return { error: "Only GMs can update journal entries" };
-    }
-
+  static async updateJournalEntry(args) {
     try {
       const journal = game.journal.get(args.journal_id);
-      if (!journal) return { error: "Journal entry not found" };
+      if (!journal) return { error: "Journal not found" };
 
       const updateData = {};
       if (args.name !== undefined) updateData.name = args.name;
@@ -835,6 +825,109 @@ export class FvttApiWrapper {
       }
 
       return { success: true };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  /**
+   * Add a page to a journal
+   * @param {Object} args - Page creation arguments
+   * @returns {Promise<Object>}
+   */
+  static async addJournalPage(args) {
+    try {
+      const journal = game.journal.get(args.journal_id);
+      if (!journal) return { error: "Journal not found" };
+
+      const pageData = {
+        name: args.name,
+        type: args.page_type,
+      };
+
+      if (args.page_type === "text") {
+        pageData.text = { content: args.content || "" };
+      } else if (args.page_type === "image") {
+        pageData.src = args.src || "";
+      } else {
+        return { error: "Invalid page type. Use 'text' or 'image'" };
+      }
+
+      if (args.sort !== undefined) {
+        pageData.sort = args.sort;
+      }
+
+      const [page] = await journal.createEmbeddedDocuments("JournalEntryPage", [pageData]);
+      return { success: true, page_id: page.id, page_name: page.name };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  /**
+   * Update a journal page
+   * @param {Object} args - Page update arguments
+   * @returns {Promise<Object>}
+   */
+  static async updateJournalPage(args) {
+    try {
+      const journal = game.journal.get(args.journal_id);
+      if (!journal) return { error: "Journal not found" };
+
+      const page = journal.pages.get(args.page_id);
+      if (!page) return { error: "Page not found" };
+
+      const updateData = {};
+      if (args.name !== undefined) updateData.name = args.name;
+      if (args.content !== undefined) updateData["text.content"] = args.content;
+      if (args.src !== undefined) updateData.src = args.src;
+      if (args.sort !== undefined) updateData.sort = args.sort;
+
+      await page.update(updateData);
+      return { success: true };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  /**
+   * Delete a journal page
+   * @param {Object} args - Page deletion arguments
+   * @returns {Promise<Object>}
+   */
+  static async deleteJournalPage(args) {
+    try {
+      const journal = game.journal.get(args.journal_id);
+      if (!journal) return { error: "Journal not found" };
+
+      const page = journal.pages.get(args.page_id);
+      if (!page) return { error: "Page not found" };
+
+      await journal.deleteEmbeddedDocuments("JournalEntryPage", [args.page_id]);
+      return { success: true };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  /**
+   * List pages in a journal
+   * @param {Object} args - List arguments
+   * @returns {Promise<Object>}
+   */
+  static async listJournalPages(args) {
+    try {
+      const journal = game.journal.get(args.journal_id);
+      if (!journal) return { error: "Journal not found" };
+
+      const pages = journal.pages.map((p) => ({
+        id: p.id,
+        name: p.name,
+        type: p.type,
+        sort: p.sort,
+      }));
+
+      return { success: true, pages };
     } catch (error) {
       return { error: error.message };
     }

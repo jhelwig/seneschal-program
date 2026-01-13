@@ -607,12 +607,12 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                 }),
             },
         },
-        // Journal Entry CRUD
+        // Journal CRUD
         OllamaToolDefinition {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
-                name: "create_journal_entry".to_string(),
-                description: "Create a Foundry VTT journal entry for notes, handouts, or lore. Journal entries can have multiple pages with text or images.".to_string(),
+                name: "create_journal".to_string(),
+                description: "Create a Foundry VTT journal for notes, handouts, or lore. Journals can have multiple pages with text or images.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -647,14 +647,14 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
         OllamaToolDefinition {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
-                name: "get_journal_entry".to_string(),
-                description: "Get a Foundry VTT journal entry by ID. Returns the journal's pages and content.".to_string(),
+                name: "get_journal".to_string(),
+                description: "Get a Foundry VTT journal by ID. Returns the journal's pages and content.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "journal_id": {
                             "type": "string",
-                            "description": "The journal entry's document ID"
+                            "description": "The journal's document ID"
                         }
                     },
                     "required": ["journal_id"]
@@ -664,14 +664,14 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
         OllamaToolDefinition {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
-                name: "update_journal_entry".to_string(),
-                description: "Update an existing Foundry VTT journal entry. Can modify name, content, or pages.".to_string(),
+                name: "update_journal".to_string(),
+                description: "Update an existing Foundry VTT journal. Can modify name, content, or pages.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "journal_id": {
                             "type": "string",
-                            "description": "The journal entry's document ID"
+                            "description": "The journal's document ID"
                         },
                         "name": {
                             "type": "string",
@@ -696,14 +696,128 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
         OllamaToolDefinition {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
-                name: "delete_journal_entry".to_string(),
-                description: "Delete a Foundry VTT journal entry permanently.".to_string(),
+                name: "delete_journal".to_string(),
+                description: "Delete a Foundry VTT journal permanently.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "journal_id": {
                             "type": "string",
-                            "description": "The journal entry's document ID"
+                            "description": "The journal's document ID"
+                        }
+                    },
+                    "required": ["journal_id"]
+                }),
+            },
+        },
+        // Journal Page CRUD
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "add_journal_page".to_string(),
+                description: "Add a new page to an existing Foundry VTT journal. Use get_journal first to see existing pages.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "journal_id": {
+                            "type": "string",
+                            "description": "The journal's document ID"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the new page"
+                        },
+                        "page_type": {
+                            "type": "string",
+                            "enum": ["text", "image"],
+                            "description": "Type of page: 'text' for HTML content, 'image' for an image page"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "HTML content for text pages"
+                        },
+                        "src": {
+                            "type": "string",
+                            "description": "Image path for image pages (use image_deliver first)"
+                        },
+                        "sort": {
+                            "type": "integer",
+                            "description": "Sort order value (optional, appends to end if omitted)"
+                        }
+                    },
+                    "required": ["journal_id", "name", "page_type"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "update_journal_page".to_string(),
+                description: "Update a specific page in a Foundry VTT journal. Use get_journal or list_journal_pages first to find page IDs.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "journal_id": {
+                            "type": "string",
+                            "description": "The journal's document ID"
+                        },
+                        "page_id": {
+                            "type": "string",
+                            "description": "The page's document ID"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "New name for the page"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "New HTML content (for text pages)"
+                        },
+                        "src": {
+                            "type": "string",
+                            "description": "New image path (for image pages)"
+                        },
+                        "sort": {
+                            "type": "integer",
+                            "description": "New sort order value"
+                        }
+                    },
+                    "required": ["journal_id", "page_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "delete_journal_page".to_string(),
+                description: "Delete a specific page from a Foundry VTT journal. Use get_journal or list_journal_pages first to find page IDs.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "journal_id": {
+                            "type": "string",
+                            "description": "The journal's document ID"
+                        },
+                        "page_id": {
+                            "type": "string",
+                            "description": "The page's document ID to delete"
+                        }
+                    },
+                    "required": ["journal_id", "page_id"]
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "list_journal_pages".to_string(),
+                description: "List all pages in a Foundry VTT journal. Returns page IDs, names, types, and sort order.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "journal_id": {
+                            "type": "string",
+                            "description": "The journal's document ID"
                         }
                     },
                     "required": ["journal_id"]
@@ -877,8 +991,8 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
         OllamaToolDefinition {
             tool_type: "function".to_string(),
             function: OllamaFunctionDefinition {
-                name: "list_journal_entries".to_string(),
-                description: "List journal entries in Foundry VTT. Can filter by name pattern.".to_string(),
+                name: "list_journals".to_string(),
+                description: "List journals in Foundry VTT. Can filter by name pattern.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {

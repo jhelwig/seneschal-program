@@ -210,7 +210,8 @@ pub fn extract_path_regions(page: &PdfPage) -> Vec<ContentRegion> {
     regions
         .into_iter()
         .filter_map(|region| {
-            intersect_rectangles(&region.bounds, &page_bounds).map(|bounds| ContentRegion { bounds })
+            intersect_rectangles(&region.bounds, &page_bounds)
+                .map(|bounds| ContentRegion { bounds })
         })
         .collect()
 }
@@ -254,7 +255,8 @@ fn extract_paths_from_object(object: &PdfPageObject, regions: &mut Vec<ContentRe
             // Use the form object's overall bounds in page-space.
             // This represents where the form's content renders on the page.
             // We don't recurse into children because their bounds are in form-space.
-            if let Ok(quad_points) = PdfPageObjectCommon::bounds(form_obj as &dyn PdfPageObjectCommon)
+            if let Ok(quad_points) =
+                PdfPageObjectCommon::bounds(form_obj as &dyn PdfPageObjectCommon)
             {
                 let bounds = quad_points.to_rect();
                 trace!(

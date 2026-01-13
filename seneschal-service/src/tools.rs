@@ -155,12 +155,17 @@ pub fn classify_tool(tool_name: &str) -> ToolLocation {
             ToolLocation::External
         }
 
-        // Journal Entry CRUD
-        "create_journal_entry"
-        | "get_journal_entry"
-        | "update_journal_entry"
-        | "delete_journal_entry"
-        | "list_journal_entries" => ToolLocation::External,
+        // Journal CRUD
+        "create_journal"
+        | "get_journal"
+        | "update_journal"
+        | "delete_journal"
+        | "list_journals"
+        // Journal Page CRUD
+        | "add_journal_page"
+        | "update_journal_page"
+        | "delete_journal_page"
+        | "list_journal_pages" => ToolLocation::External,
 
         // Rollable Table CRUD
         "create_rollable_table"
