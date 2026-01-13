@@ -147,6 +147,128 @@ pub async fn handle_tools_list(_state: &McpState) -> Result<serde_json::Value, M
                 "required": ["skill_name"]
             }),
         },
+        McpToolDefinition {
+            name: "document_list".to_string(),
+            description: "List all available documents (rulebooks, scenarios) with their IDs and titles.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "tags": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional tags to filter documents"
+                    }
+                }
+            }),
+        },
+        McpToolDefinition {
+            name: "document_find".to_string(),
+            description: "Find documents by title (case-insensitive partial match). Returns document IDs and metadata.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "The document title to search for (partial match)"
+                    }
+                },
+                "required": ["title"]
+            }),
+        },
+        McpToolDefinition {
+            name: "image_list".to_string(),
+            description: "List images from a document. Use document_find first to get the document ID.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "document_id": {
+                        "type": "string",
+                        "description": "The document ID"
+                    },
+                    "start_page": {
+                        "type": "integer",
+                        "description": "Optional: filter to images starting from this page number"
+                    },
+                    "end_page": {
+                        "type": "integer",
+                        "description": "Optional: filter to images up to and including this page number"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum images to return (default 20)"
+                    }
+                },
+                "required": ["document_id"]
+            }),
+        },
+        McpToolDefinition {
+            name: "image_search".to_string(),
+            description: "Search for images by description using semantic similarity. Good for finding maps, portraits, deck plans, etc.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Description of the image to find"
+                    },
+                    "document_id": {
+                        "type": "string",
+                        "description": "Optional: limit search to a specific document"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results (default 10)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
+        McpToolDefinition {
+            name: "image_get".to_string(),
+            description: "Get detailed information about a specific image by its ID.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "image_id": {
+                        "type": "string",
+                        "description": "The image ID"
+                    }
+                },
+                "required": ["image_id"]
+            }),
+        },
+        McpToolDefinition {
+            name: "image_deliver".to_string(),
+            description: "Copy an image to the Foundry VTT assets directory so it can be used in scenes, actors, etc. Returns the FVTT path to use in documents.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "image_id": {
+                        "type": "string",
+                        "description": "The image ID to deliver"
+                    },
+                    "target_path": {
+                        "type": "string",
+                        "description": "Optional: path relative to the assets directory. Default: auto-generated"
+                    }
+                },
+                "required": ["image_id"]
+            }),
+        },
+        McpToolDefinition {
+            name: "system_schema".to_string(),
+            description: "Get the game system's schema for actors and items.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "document_type": {
+                        "type": "string",
+                        "enum": ["actor", "item"],
+                        "description": "Optional: get schema for specific document type"
+                    }
+                }
+            }),
+        },
     ];
 
     Ok(serde_json::json!({ "tools": tools }))
