@@ -11,9 +11,11 @@ use serde::{Deserialize, Serialize};
 
 pub mod definitions;
 pub mod traveller;
+pub mod traveller_map;
 
 pub use definitions::{OllamaToolDefinition, get_ollama_tool_definitions};
 pub use traveller::TravellerTool;
+pub use traveller_map::{TravellerMapClient, TravellerMapTool};
 
 /// Access levels aligned with FVTT user roles
 /// Values correspond to minimum required role to access
@@ -127,7 +129,19 @@ pub fn classify_tool(tool_name: &str) -> ToolLocation {
         | "system_schema"
         | "traveller_uwp_parse"
         | "traveller_jump_calc"
-        | "traveller_skill_lookup" => ToolLocation::Internal,
+        | "traveller_skill_lookup"
+        // Traveller Map API tools
+        | "traveller_map_search"
+        | "traveller_map_jump_worlds"
+        | "traveller_map_route"
+        | "traveller_map_world_data"
+        | "traveller_map_sector_data"
+        | "traveller_map_coordinates"
+        | "traveller_map_list_sectors"
+        | "traveller_map_poster_url"
+        | "traveller_map_jump_map_url"
+        | "traveller_map_save_poster"
+        | "traveller_map_save_jump_map" => ToolLocation::Internal,
 
         // Generic FVTT tools
         "fvtt_read" | "fvtt_write" | "fvtt_query" | "dice_roll" => ToolLocation::External,

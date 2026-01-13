@@ -92,3 +92,6 @@ rand = "0.8"
 
 # Schema generation
 schemars = "0.8"
+
+# URL encoding
+urlencoding = "2.1"

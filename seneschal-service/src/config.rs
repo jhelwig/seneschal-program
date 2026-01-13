@@ -35,6 +35,9 @@ pub struct AppConfig {
 
     #[serde(default = "default_image_extraction")]
     pub image_extraction: ImageExtractionConfig,
+
+    #[serde(default = "default_traveller_map")]
+    pub traveller_map: TravellerMapConfig,
 }
 
 /// HTTP server configuration
@@ -183,6 +186,27 @@ impl Default for ImageExtractionConfig {
             background_area_threshold: default_background_area_threshold(),
             background_min_pages: default_background_min_pages(),
             text_overlap_min_dpi: default_text_overlap_min_dpi(),
+        }
+    }
+}
+
+/// Traveller Map API configuration
+#[derive(Debug, Clone, Deserialize)]
+pub struct TravellerMapConfig {
+    /// Base URL for the Traveller Map API
+    #[serde(default = "default_traveller_map_url")]
+    pub base_url: String,
+
+    /// Request timeout in seconds
+    #[serde(default = "default_traveller_map_timeout")]
+    pub timeout_secs: u64,
+}
+
+impl Default for TravellerMapConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_traveller_map_url(),
+            timeout_secs: default_traveller_map_timeout(),
         }
     }
 }
@@ -390,6 +414,18 @@ fn default_background_min_pages() -> usize {
 
 fn default_text_overlap_min_dpi() -> f64 {
     300.0
+}
+
+fn default_traveller_map() -> TravellerMapConfig {
+    TravellerMapConfig::default()
+}
+
+fn default_traveller_map_url() -> String {
+    "https://travellermap.com".to_string()
+}
+
+fn default_traveller_map_timeout() -> u64 {
+    30
 }
 
 impl AppConfig {

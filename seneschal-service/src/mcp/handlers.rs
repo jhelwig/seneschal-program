@@ -269,6 +269,266 @@ pub async fn handle_tools_list(_state: &McpState) -> Result<serde_json::Value, M
                 }
             }),
         },
+        // ==========================================
+        // Traveller Map API Tools
+        // ==========================================
+        McpToolDefinition {
+            name: "traveller_map_search".to_string(),
+            description: "Search the Traveller Map for worlds, sectors, or subsectors by name. Returns matching locations with coordinates and basic data.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query - world name, sector name, or subsector name (e.g., 'Regina', 'Spinward Marches')"
+                    },
+                    "milieu": {
+                        "type": "string",
+                        "description": "Optional time period/era code (e.g., 'M1105' for 1105 Imperial)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
+        McpToolDefinition {
+            name: "traveller_map_jump_worlds".to_string(),
+            description: "Find all worlds within jump range of a specified location. Essential for planning travel routes.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "sector": {
+                        "type": "string",
+                        "description": "Sector name (e.g., 'Spinward Marches')"
+                    },
+                    "hex": {
+                        "type": "string",
+                        "description": "Hex location in XXYY format (e.g., '1910' for Regina)"
+                    },
+                    "jump": {
+                        "type": "integer",
+                        "description": "Maximum jump distance in parsecs (1-6 typical)"
+                    }
+                },
+                "required": ["sector", "hex", "jump"]
+            }),
+        },
+        McpToolDefinition {
+            name: "traveller_map_route".to_string(),
+            description: "Calculate the shortest jump route between two locations. Returns worlds along the optimal path.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "start": {
+                        "type": "string",
+                        "description": "Starting location (e.g., 'Spinward Marches 1910' or 'Regina')"
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "Destination location"
+                    },
+                    "jump": {
+                        "type": "integer",
+                        "description": "Ship's jump capability in parsecs (default: 2)"
+                    },
+                    "wild": {
+                        "type": "boolean",
+                        "description": "Require wilderness refueling capability"
+                    },
+                    "imperium_only": {
+                        "type": "boolean",
+                        "description": "Restrict to Third Imperium worlds"
+                    },
+                    "no_red_zones": {
+                        "type": "boolean",
+                        "description": "Avoid TAS Red Zones"
+                    }
+                },
+                "required": ["start", "end"]
+            }),
+        },
+        McpToolDefinition {
+            name: "traveller_map_world_data".to_string(),
+            description: "Get detailed world data including UWP, trade codes, bases, stellar data.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "sector": {
+                        "type": "string",
+                        "description": "Sector name"
+                    },
+                    "hex": {
+                        "type": "string",
+                        "description": "Hex location in XXYY format"
+                    }
+                },
+                "required": ["sector", "hex"]
+            }),
+        },
+        McpToolDefinition {
+            name: "traveller_map_sector_data".to_string(),
+            description: "Get all world data for a sector or subsector.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "sector": {
+                        "type": "string",
+                        "description": "Sector name"
+                    },
+                    "subsector": {
+                        "type": "string",
+                        "description": "Optional subsector (A-P or name)"
+                    }
+                },
+                "required": ["sector"]
+            }),
+        },
+        McpToolDefinition {
+            name: "traveller_map_coordinates".to_string(),
+            description: "Convert sector/hex to world-space coordinates.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "sector": {
+                        "type": "string",
+                        "description": "Sector name"
+                    },
+                    "hex": {
+                        "type": "string",
+                        "description": "Optional hex location"
+                    }
+                },
+                "required": ["sector"]
+            }),
+        },
+        McpToolDefinition {
+            name: "traveller_map_list_sectors".to_string(),
+            description: "List all known sectors in Charted Space.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "milieu": {
+                        "type": "string",
+                        "description": "Optional time period filter"
+                    }
+                }
+            }),
+        },
+        McpToolDefinition {
+            name: "traveller_map_poster_url".to_string(),
+            description: "Generate a URL for a sector or subsector map image.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "sector": {
+                        "type": "string",
+                        "description": "Sector name"
+                    },
+                    "subsector": {
+                        "type": "string",
+                        "description": "Optional subsector"
+                    },
+                    "style": {
+                        "type": "string",
+                        "enum": ["poster", "print", "atlas", "candy", "draft", "fasa", "terminal", "mongoose"],
+                        "description": "Visual style"
+                    }
+                },
+                "required": ["sector"]
+            }),
+        },
+        McpToolDefinition {
+            name: "traveller_map_jump_map_url".to_string(),
+            description: "Generate a URL for a jump range map centered on a world.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "sector": {
+                        "type": "string",
+                        "description": "Sector name"
+                    },
+                    "hex": {
+                        "type": "string",
+                        "description": "Center hex location"
+                    },
+                    "jump": {
+                        "type": "integer",
+                        "description": "Jump range to display"
+                    },
+                    "style": {
+                        "type": "string",
+                        "enum": ["poster", "print", "atlas", "candy", "draft", "fasa", "terminal", "mongoose"],
+                        "description": "Visual style"
+                    }
+                },
+                "required": ["sector", "hex", "jump"]
+            }),
+        },
+        McpToolDefinition {
+            name: "traveller_map_save_poster".to_string(),
+            description: "Download a sector/subsector map and save to FVTT assets. Returns the FVTT path.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "sector": {
+                        "type": "string",
+                        "description": "Sector name"
+                    },
+                    "subsector": {
+                        "type": "string",
+                        "description": "Optional subsector (A-P or name)"
+                    },
+                    "style": {
+                        "type": "string",
+                        "enum": ["poster", "print", "atlas", "candy", "draft", "fasa", "terminal", "mongoose"],
+                        "description": "Visual style"
+                    },
+                    "scale": {
+                        "type": "integer",
+                        "description": "Pixels per parsec (default: 64)"
+                    },
+                    "target_path": {
+                        "type": "string",
+                        "description": "Optional custom path relative to assets"
+                    }
+                },
+                "required": ["sector"]
+            }),
+        },
+        McpToolDefinition {
+            name: "traveller_map_save_jump_map".to_string(),
+            description: "Download a jump map and save to FVTT assets. Returns the FVTT path.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "sector": {
+                        "type": "string",
+                        "description": "Sector name"
+                    },
+                    "hex": {
+                        "type": "string",
+                        "description": "Center hex location"
+                    },
+                    "jump": {
+                        "type": "integer",
+                        "description": "Jump range to display"
+                    },
+                    "style": {
+                        "type": "string",
+                        "enum": ["poster", "print", "atlas", "candy", "draft", "fasa", "terminal", "mongoose"],
+                        "description": "Visual style"
+                    },
+                    "scale": {
+                        "type": "integer",
+                        "description": "Pixels per parsec (default: 64)"
+                    },
+                    "target_path": {
+                        "type": "string",
+                        "description": "Optional custom path relative to assets"
+                    }
+                },
+                "required": ["sector", "hex", "jump"]
+            }),
+        },
     ];
 
     Ok(serde_json::json!({ "tools": tools }))
