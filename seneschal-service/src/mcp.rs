@@ -11,11 +11,14 @@ use axum::{
     http::{HeaderMap, Method, StatusCode, header},
     response::{IntoResponse, Response, Sse, sse::Event},
 };
+use dashmap::DashMap;
 use futures::stream;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::convert::Infallible;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -27,9 +30,65 @@ pub mod tools;
 use handlers::{handle_initialize, handle_tools_list};
 use tools::handle_tool_call;
 
+/// Cached tool result with timestamp
+pub struct CachedToolResult {
+    pub result: serde_json::Value,
+    pub created_at: Instant,
+}
+
 /// MCP server state
 pub struct McpState {
     pub service: Arc<SeneschalService>,
+    /// Cache for deduplicating tool calls (key: hash of tool+args, value: cached result)
+    pub tool_dedup_cache: DashMap<u64, CachedToolResult>,
+}
+
+/// TTL for cached tool results (10 seconds)
+pub const TOOL_DEDUP_TTL: Duration = Duration::from_secs(10);
+
+impl McpState {
+    /// Generate a dedup cache key from session ID, tool name and arguments
+    ///
+    /// Including session ID scopes deduplication to a single client, preventing
+    /// accidental cross-client result sharing.
+    pub fn dedup_key(session_id: Option<&str>, tool: &str, args: &serde_json::Value) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        if let Some(sid) = session_id {
+            sid.hash(&mut hasher);
+        }
+        tool.hash(&mut hasher);
+        // Use canonical JSON string for consistent hashing
+        let args_str = serde_json::to_string(args).unwrap_or_default();
+        args_str.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Check cache for a recent result
+    pub fn get_cached_result(&self, key: u64) -> Option<serde_json::Value> {
+        if let Some(entry) = self.tool_dedup_cache.get(&key)
+            && entry.created_at.elapsed() < TOOL_DEDUP_TTL
+        {
+            return Some(entry.result.clone());
+        }
+        None
+    }
+
+    /// Store a result in the cache
+    pub fn cache_result(&self, key: u64, result: serde_json::Value) {
+        self.tool_dedup_cache.insert(
+            key,
+            CachedToolResult {
+                result,
+                created_at: Instant::now(),
+            },
+        );
+    }
+
+    /// Clean up expired cache entries (call periodically)
+    pub fn cleanup_expired_cache(&self) {
+        self.tool_dedup_cache
+            .retain(|_, v| v.created_at.elapsed() < TOOL_DEDUP_TTL);
+    }
 }
 
 /// Build the MCP router
@@ -39,7 +98,10 @@ pub struct McpState {
 ///
 /// Uses fallback to handle both `/mcp` and `/mcp/` paths when nested.
 pub fn mcp_router(service: Arc<SeneschalService>) -> Router {
-    let state = Arc::new(McpState { service });
+    let state = Arc::new(McpState {
+        service,
+        tool_dedup_cache: DashMap::new(),
+    });
 
     // Use fallback to handle the root path regardless of trailing slash
     Router::new()
@@ -126,9 +188,14 @@ async fn mcp_post_handler(
 ) -> Response {
     debug!(method = %request.method, "MCP request received");
 
-    // Log session ID if provided
-    if let Some(session_id) = headers.get("mcp-session-id") {
-        debug!(session_id = ?session_id, "Request includes session ID");
+    // Extract session ID if provided
+    let session_id = headers
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    if let Some(ref sid) = session_id {
+        debug!(session_id = %sid, "Request includes session ID");
     }
 
     let result = match request.method.as_str() {
@@ -147,7 +214,7 @@ async fn mcp_post_handler(
         }
         "tools/call" => {
             debug!("MCP tools/call request");
-            handle_tool_call(&state, request.params).await
+            handle_tool_call(&state, request.params, session_id.as_deref()).await
         }
         "ping" => {
             debug!("MCP ping request");
