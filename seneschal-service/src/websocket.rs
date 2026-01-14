@@ -166,6 +166,20 @@ impl WebSocketManager {
             .filter(|entry| entry.value().authenticated && entry.value().subscribed_to_documents)
             .count()
     }
+
+    /// Get first available authenticated GM connection for MCP routing
+    ///
+    /// Returns the session_id of an authenticated connection with GM role (4+),
+    /// or None if no GM is currently connected.
+    pub fn get_any_gm_connection(&self) -> Option<String> {
+        for entry in self.connections.iter() {
+            let conn = entry.value();
+            if conn.authenticated && conn.user_role.is_some_and(|r| r >= 4) {
+                return Some(entry.key().clone());
+            }
+        }
+        None
+    }
 }
 
 /// Handle a WebSocket connection
@@ -401,9 +415,18 @@ async fn handle_client_message(
                 "Received tool result via WebSocket"
             );
 
-            service
-                .handle_tool_result_ws(&conversation_id, &tool_call_id, result)
-                .await;
+            // Route based on conversation_id prefix
+            if conversation_id.starts_with("mcp:") {
+                // MCP tool result - route to MCP handler
+                service
+                    .handle_mcp_tool_result(&conversation_id, &tool_call_id, result)
+                    .await;
+            } else {
+                // Regular WebSocket chat tool result
+                service
+                    .handle_tool_result_ws(&conversation_id, &tool_call_id, result)
+                    .await;
+            }
         }
         ClientMessage::ContinueChat { conversation_id } => {
             debug!(

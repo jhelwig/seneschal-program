@@ -6,7 +6,9 @@ use crate::config::AssetsAccess;
 use crate::ingestion::IngestionService;
 use crate::search::format_search_results_for_llm;
 use crate::tools::traveller_map::{JumpMapOptions, PosterOptions};
-use crate::tools::{SearchFilters, TagMatch, TravellerMapTool, TravellerTool};
+use crate::tools::{
+    SearchFilters, TagMatch, ToolLocation, TravellerMapTool, TravellerTool, classify_tool,
+};
 
 use super::{McpError, McpState};
 
@@ -36,45 +38,94 @@ pub async fn handle_tool_call(
     // MCP clients have GM access (role=4) since MCP has no user context
     let gm_role = 4u8;
 
-    let result = match name {
-        "document_search" => execute_document_search(state, &arguments, gm_role).await?,
-        "document_search_text" => execute_document_search_text(state, &arguments, gm_role)?,
-        "document_get" => execute_document_get(state, &arguments, gm_role)?,
-        "document_list" => execute_document_list(state, &arguments, gm_role)?,
-        "document_find" => execute_document_find(state, &arguments, gm_role)?,
-        "image_list" => execute_image_list(state, &arguments, gm_role)?,
-        "image_search" => execute_image_search(state, &arguments, gm_role).await?,
-        "image_get" => execute_image_get(state, &arguments, gm_role)?,
-        "image_deliver" => execute_image_deliver(state, &arguments, gm_role)?,
-        "system_schema" => execute_system_schema(&arguments)?,
-        "traveller_uwp_parse" => execute_traveller_uwp_parse(&arguments)?,
-        "traveller_jump_calc" => execute_traveller_jump_calc(&arguments)?,
-        "traveller_skill_lookup" => execute_traveller_skill_lookup(&arguments)?,
-        // Traveller Map API tools
-        "traveller_map_search" => execute_traveller_map_search(state, &arguments).await?,
-        "traveller_map_jump_worlds" => execute_traveller_map_jump_worlds(state, &arguments).await?,
-        "traveller_map_route" => execute_traveller_map_route(state, &arguments).await?,
-        "traveller_map_world_data" => execute_traveller_map_world_data(state, &arguments).await?,
-        "traveller_map_sector_data" => execute_traveller_map_sector_data(state, &arguments).await?,
-        "traveller_map_coordinates" => execute_traveller_map_coordinates(state, &arguments).await?,
-        "traveller_map_list_sectors" => {
-            execute_traveller_map_list_sectors(state, &arguments).await?
+    // Classify the tool and route accordingly
+    let location = classify_tool(name);
+
+    let result = match location {
+        ToolLocation::Internal => {
+            // Execute internal tools directly
+            execute_internal_tool(state, name, &arguments, gm_role).await?
         }
-        "traveller_map_poster_url" => execute_traveller_map_poster_url(state, &arguments)?,
-        "traveller_map_jump_map_url" => execute_traveller_map_jump_map_url(state, &arguments)?,
-        "traveller_map_save_poster" => execute_traveller_map_save_poster(state, &arguments).await?,
-        "traveller_map_save_jump_map" => {
-            execute_traveller_map_save_jump_map(state, &arguments).await?
-        }
-        _ => {
-            return Err(McpError {
-                code: -32601,
-                message: format!("Unknown tool: {}", name),
-            });
+        ToolLocation::External => {
+            // Route external tools through GM WebSocket connection
+            execute_external_tool(state, name, arguments).await?
         }
     };
 
     Ok(result)
+}
+
+/// Execute an internal tool directly on the backend
+async fn execute_internal_tool(
+    state: &McpState,
+    name: &str,
+    arguments: &serde_json::Value,
+    gm_role: u8,
+) -> Result<serde_json::Value, McpError> {
+    match name {
+        "document_search" => execute_document_search(state, arguments, gm_role).await,
+        "document_search_text" => execute_document_search_text(state, arguments, gm_role),
+        "document_get" => execute_document_get(state, arguments, gm_role),
+        "document_list" => execute_document_list(state, arguments, gm_role),
+        "document_find" => execute_document_find(state, arguments, gm_role),
+        "image_list" => execute_image_list(state, arguments, gm_role),
+        "image_search" => execute_image_search(state, arguments, gm_role).await,
+        "image_get" => execute_image_get(state, arguments, gm_role),
+        "image_deliver" => execute_image_deliver(state, arguments, gm_role),
+        "system_schema" => execute_system_schema(arguments),
+        "traveller_uwp_parse" => execute_traveller_uwp_parse(arguments),
+        "traveller_jump_calc" => execute_traveller_jump_calc(arguments),
+        "traveller_skill_lookup" => execute_traveller_skill_lookup(arguments),
+        // Traveller Map API tools
+        "traveller_map_search" => execute_traveller_map_search(state, arguments).await,
+        "traveller_map_jump_worlds" => execute_traveller_map_jump_worlds(state, arguments).await,
+        "traveller_map_route" => execute_traveller_map_route(state, arguments).await,
+        "traveller_map_world_data" => execute_traveller_map_world_data(state, arguments).await,
+        "traveller_map_sector_data" => execute_traveller_map_sector_data(state, arguments).await,
+        "traveller_map_coordinates" => execute_traveller_map_coordinates(state, arguments).await,
+        "traveller_map_list_sectors" => execute_traveller_map_list_sectors(state, arguments).await,
+        "traveller_map_poster_url" => execute_traveller_map_poster_url(state, arguments),
+        "traveller_map_jump_map_url" => execute_traveller_map_jump_map_url(state, arguments),
+        "traveller_map_save_poster" => execute_traveller_map_save_poster(state, arguments).await,
+        "traveller_map_save_jump_map" => {
+            execute_traveller_map_save_jump_map(state, arguments).await
+        }
+        _ => Err(McpError {
+            code: -32601,
+            message: format!("Unknown internal tool: {}", name),
+        }),
+    }
+}
+
+/// Execute an external tool by routing through GM WebSocket connection
+async fn execute_external_tool(
+    state: &McpState,
+    name: &str,
+    arguments: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    // Get timeout from config
+    let timeout = state.service.config.agentic_loop.external_tool_timeout();
+
+    match state
+        .service
+        .execute_external_tool_mcp(name, arguments, timeout)
+        .await
+    {
+        Ok(result) => {
+            // Format result in MCP content format
+            let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+            Ok(serde_json::json!({
+                "content": [{
+                    "type": "text",
+                    "text": text
+                }]
+            }))
+        }
+        Err(e) => Err(McpError {
+            code: -32000,
+            message: e,
+        }),
+    }
 }
 
 async fn execute_document_search(

@@ -50,7 +50,8 @@
     "ToolStatus": {
       "Searching": "Searching documents...",
       "Retrieving": "Retrieving information...",
-      "Processing": "Processing..."
+      "Processing": "Processing...",
+      "Executing": "Executing {tool}..."
     },
     "Mgt2e": {
       "ParseUwp": "Parsing UWP...",

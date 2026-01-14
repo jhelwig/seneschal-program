@@ -107,7 +107,7 @@ export class BackendClient {
    * @param {string} options.conversationId - Conversation ID
    * @param {Array<string>} options.tools - Enabled tools
    * @param {Function} options.onChunk - Called with each text chunk
-   * @param {Function} options.onToolCall - Called when tool call is needed
+   * @param {Function} options.onToolCall - Called when tool execution starts (for UI updates); receives (tool)
    * @param {Function} options.onToolStatus - Called with tool status updates
    * @param {Function} options.onPause - Called when loop pauses
    * @param {Function} options.onComplete - Called when done
@@ -147,10 +147,10 @@ export class BackendClient {
         fullContent += text;
         if (onChunk) onChunk(text);
       },
-      onToolCall: async (id, tool, args) => {
-        allToolCalls.push({ id, tool, args });
+      onToolCall: (tool) => {
+        allToolCalls.push({ tool });
         if (onToolCall) {
-          await onToolCall(id, tool, args);
+          onToolCall(tool);
         }
       },
       onToolStatus,

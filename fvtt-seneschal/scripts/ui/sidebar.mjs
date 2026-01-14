@@ -6,7 +6,6 @@ import { MODULE_ID } from "../constants.mjs";
 import { buildUserContext, parseMarkdown } from "../utils.mjs";
 import { BackendClient } from "../clients/backend.mjs";
 import { ConversationSession } from "../clients/session.mjs";
-import { ToolExecutor } from "../tools/index.mjs";
 import { DocumentManagementDialog } from "./dialogs/documents.mjs";
 
 /**
@@ -148,7 +147,7 @@ export class SeneschalSidebarTab {
         "create_scene",
       ],
       onChunk: (text) => this._onChunk(text),
-      onToolCall: (id, tool, args) => this._onToolCall(id, tool, args),
+      onToolCall: (tool) => this._onToolCall(tool),
       onToolStatus: (message) => this._onToolStatus(message),
       onPause: (reason, toolCalls, elapsed, message) =>
         this._onPause(reason, toolCalls, elapsed, message),
@@ -185,18 +184,12 @@ export class SeneschalSidebarTab {
   }
 
   /**
-   * Handle tool call request
+   * Handle tool call notification (UI update only - execution handled by WebSocket client)
+   * @param {string} tool - Tool name
    */
-  async _onToolCall(id, tool, args) {
-    this.toolStatus = game.i18n.localize(`SENESCHAL.ToolStatus.Processing`);
+  _onToolCall(tool) {
+    this.toolStatus = game.i18n.format("SENESCHAL.ToolStatus.Executing", { tool });
     this.render();
-
-    // Execute the tool using stored user context
-    const result = await ToolExecutor.execute(tool, args, this._currentUserContext);
-
-    // Send result back to backend via WebSocket
-    // The agentic loop will continue automatically
-    this.backendClient.sendToolResult(this.session.id, id, result);
   }
 
   /**

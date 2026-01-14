@@ -94,5 +94,8 @@ schemars = { workspace = true }
 # URL encoding
 urlencoding = { workspace = true }
 
+# Enum utilities (for tool registry)
+strum = { workspace = true }
+
 [dev-dependencies]
 tokio-test = "0.4"

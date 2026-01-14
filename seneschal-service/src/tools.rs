@@ -4,16 +4,20 @@
 //! - Core tool types (ToolCall, ToolResult)
 //! - Access level definitions
 //! - Tool classification (internal vs external)
+//! - Unified tool registry for both Ollama and MCP
 //! - Submodules for tool definitions and game-specific tools
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub mod definitions;
+pub mod registry;
+pub mod tool_defs;
 pub mod traveller;
 pub mod traveller_map;
 
-pub use definitions::{OllamaToolDefinition, get_ollama_tool_definitions};
+pub use definitions::{OllamaFunctionDefinition, OllamaToolDefinition, get_ollama_tool_definitions};
+pub use registry::REGISTRY;
 pub use traveller::TravellerTool;
 pub use traveller_map::{TravellerMapClient, TravellerMapTool};
 
@@ -114,81 +118,10 @@ pub enum ToolLocation {
     External,
 }
 
+/// Classify whether a tool is internal (backend-only) or external (requires FVTT client).
+///
+/// This function delegates to the unified tool registry, which serves
+/// as the single source of truth for tool classification.
 pub fn classify_tool(tool_name: &str) -> ToolLocation {
-    match tool_name {
-        // Internal tools - executed by the backend
-        "document_search"
-        | "document_search_text"
-        | "document_get"
-        | "document_list"
-        | "document_find"
-        | "image_list"
-        | "image_search"
-        | "image_get"
-        | "image_deliver"
-        | "system_schema"
-        | "traveller_uwp_parse"
-        | "traveller_jump_calc"
-        | "traveller_skill_lookup"
-        // Traveller Map API tools
-        | "traveller_map_search"
-        | "traveller_map_jump_worlds"
-        | "traveller_map_route"
-        | "traveller_map_world_data"
-        | "traveller_map_sector_data"
-        | "traveller_map_coordinates"
-        | "traveller_map_list_sectors"
-        | "traveller_map_poster_url"
-        | "traveller_map_jump_map_url"
-        | "traveller_map_save_poster"
-        | "traveller_map_save_jump_map" => ToolLocation::Internal,
-
-        // Generic FVTT tools
-        "fvtt_read" | "fvtt_write" | "fvtt_query" | "dice_roll" => ToolLocation::External,
-
-        // Asset browsing and image description (two-phase external)
-        "fvtt_assets_browse" | "image_describe" => ToolLocation::External,
-
-        // Folder management
-        "list_folders" | "create_folder" | "update_folder" | "delete_folder" => {
-            ToolLocation::External
-        }
-
-        // Scene CRUD
-        "create_scene" | "get_scene" | "update_scene" | "delete_scene" | "list_scenes" => {
-            ToolLocation::External
-        }
-
-        // Actor CRUD
-        "create_actor" | "get_actor" | "update_actor" | "delete_actor" | "list_actors" => {
-            ToolLocation::External
-        }
-
-        // Item CRUD
-        "create_item" | "get_item" | "update_item" | "delete_item" | "list_items" => {
-            ToolLocation::External
-        }
-
-        // Journal CRUD
-        "create_journal"
-        | "get_journal"
-        | "update_journal"
-        | "delete_journal"
-        | "list_journals"
-        // Journal Page CRUD
-        | "add_journal_page"
-        | "update_journal_page"
-        | "delete_journal_page"
-        | "list_journal_pages" => ToolLocation::External,
-
-        // Rollable Table CRUD
-        "create_rollable_table"
-        | "get_rollable_table"
-        | "update_rollable_table"
-        | "delete_rollable_table"
-        | "list_rollable_tables" => ToolLocation::External,
-
-        // Unknown tools go to client for safety
-        _ => ToolLocation::External,
-    }
+    REGISTRY.classify(tool_name)
 }

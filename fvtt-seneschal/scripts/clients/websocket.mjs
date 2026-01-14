@@ -4,6 +4,7 @@
 
 import { MODULE_ID, SETTINGS } from "../constants.mjs";
 import { getSetting, buildUserContext } from "../utils.mjs";
+import { ToolExecutor } from "../tools/index.mjs";
 
 /**
  * WebSocket client for real-time updates from the backend
@@ -144,10 +145,10 @@ export class WebSocketClient {
         break;
       }
       case "chat_tool_call": {
+        // Always execute tool calls and send results back
+        // Handlers are notified for UI updates but don't handle execution
         const handlers = this.chatHandlers.get(msg.conversation_id);
-        if (handlers?.onToolCall) {
-          handlers.onToolCall(msg.id, msg.tool, msg.args);
-        }
+        this._executeToolCall(msg.conversation_id, msg.id, msg.tool, msg.args, handlers);
         break;
       }
       case "chat_tool_status": {
@@ -230,7 +231,7 @@ export class WebSocketClient {
    * @param {Object} handlers - Event handlers
    * @param {Function} [handlers.onStarted] - Called when chat starts
    * @param {Function} [handlers.onChunk] - Called with each text chunk
-   * @param {Function} [handlers.onToolCall] - Called when tool call is needed
+   * @param {Function} [handlers.onToolCall] - Called when tool execution starts (for UI updates); receives (tool)
    * @param {Function} [handlers.onToolStatus] - Called with tool status updates
    * @param {Function} [handlers.onPause] - Called when loop pauses
    * @param {Function} [handlers.onComplete] - Called when done
@@ -341,6 +342,45 @@ export class WebSocketClient {
         console.error(`${MODULE_ID} | Error in WebSocket event handler:`, e);
       }
     });
+  }
+
+  /**
+   * Execute a tool call and send the result back to the server
+   * @param {string} conversationId - Conversation or MCP request ID
+   * @param {string} toolCallId - Tool call ID
+   * @param {string} tool - Tool name
+   * @param {Object} args - Tool arguments
+   * @param {Object} [handlers] - Optional handlers for UI notifications
+   * @private
+   */
+  async _executeToolCall(conversationId, toolCallId, tool, args, handlers) {
+    console.log(`${MODULE_ID} | Executing tool call: ${tool}`, args);
+
+    // Notify handler that tool execution is starting (for UI updates)
+    if (handlers?.onToolCall) {
+      handlers.onToolCall(tool);
+    }
+
+    try {
+      // Build user context from current FVTT user
+      const userContext = buildUserContext();
+
+      // Execute the tool
+      const result = await ToolExecutor.execute(tool, args, userContext);
+
+      // Send result back to server
+      this.sendToolResult(conversationId, toolCallId, result);
+
+      console.log(`${MODULE_ID} | Tool call completed: ${tool}`);
+    } catch (error) {
+      console.error(`${MODULE_ID} | Tool call failed: ${tool}`, error);
+
+      // Send error result back to server
+      this.sendToolResult(conversationId, toolCallId, {
+        error: true,
+        message: error.message || "Tool execution failed",
+      });
+    }
   }
 
   /**

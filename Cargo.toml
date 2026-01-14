@@ -95,3 +95,6 @@ schemars = "0.8"
 
 # URL encoding
 urlencoding = "2.1"
+
+# Enum utilities (for tool registry)
+strum = { version = "0.26", features = ["derive"] }

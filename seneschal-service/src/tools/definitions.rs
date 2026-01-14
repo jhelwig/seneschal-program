@@ -2,8 +2,14 @@
 //!
 //! This module contains the tool definition structures and the function
 //! that generates all available tool definitions for the LLM.
+//!
+//! NOTE: Tool definitions are now managed by the unified registry in
+//! `crate::tools::registry`. This module provides the struct types
+//! and delegates to the registry for the actual definitions.
 
 use serde::{Deserialize, Serialize};
+
+use super::registry::REGISTRY;
 
 /// Tool definition for Ollama's tool format
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,8 +26,18 @@ pub struct OllamaFunctionDefinition {
     pub parameters: serde_json::Value,
 }
 
-/// Get tool definitions in Ollama's format
+/// Get tool definitions in Ollama's format.
+///
+/// This function delegates to the unified tool registry, which serves
+/// as the single source of truth for all tool definitions.
 pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
+    REGISTRY.ollama_definitions()
+}
+
+// Legacy definitions kept for reference during migration.
+// TODO: Remove after verifying registry output matches.
+#[allow(dead_code)]
+fn legacy_definitions() -> Vec<OllamaToolDefinition> {
     vec![
         OllamaToolDefinition {
             tool_type: "function".to_string(),
@@ -387,6 +403,10 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                             "type": "integer",
                             "description": "Grid size in pixels"
                         },
+                        "folder": {
+                            "type": ["string", "null"],
+                            "description": "Folder name or ID to move the scene to. Use null to move to root level."
+                        },
                         "data": {
                             "type": "object",
                             "description": "Additional scene data to update (advanced)"
@@ -484,6 +504,10 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                             "type": "string",
                             "description": "New portrait image path"
                         },
+                        "folder": {
+                            "type": ["string", "null"],
+                            "description": "Folder name or ID to move the actor to. Use null to move to root level."
+                        },
                         "data": {
                             "type": "object",
                             "description": "Actor system data to update (stats, attributes, etc.)"
@@ -580,6 +604,10 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                         "img": {
                             "type": "string",
                             "description": "New item image path"
+                        },
+                        "folder": {
+                            "type": ["string", "null"],
+                            "description": "Folder name or ID to move the item to. Use null to move to root level."
                         },
                         "data": {
                             "type": "object",
@@ -680,6 +708,10 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                         "content": {
                             "type": "string",
                             "description": "New HTML content (for simple single-page journals)"
+                        },
+                        "folder": {
+                            "type": ["string", "null"],
+                            "description": "Folder name or ID to move the journal to. Use null to move to root level."
                         },
                         "pages": {
                             "type": "array",
@@ -824,6 +856,28 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                 }),
             },
         },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "reorder_journal_pages".to_string(),
+                description: "Bulk reorder pages in a Foundry VTT journal. Provide an array of page IDs in the desired display order.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "journal_id": {
+                            "type": "string",
+                            "description": "The journal's document ID"
+                        },
+                        "page_order": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Array of page IDs in the desired display order (first ID will appear first)"
+                        }
+                    },
+                    "required": ["journal_id", "page_order"]
+                }),
+            },
+        },
         // Rollable Table CRUD
         OllamaToolDefinition {
             tool_type: "function".to_string(),
@@ -901,6 +955,10 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                         "formula": {
                             "type": "string",
                             "description": "New dice formula"
+                        },
+                        "folder": {
+                            "type": ["string", "null"],
+                            "description": "Folder name or ID to move the table to. Use null to move to root level."
                         },
                         "results": {
                             "type": "array",
@@ -1075,7 +1133,7 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                     "properties": {
                         "document_type": {
                             "type": "string",
-                            "enum": ["Actor", "Item", "JournalEntry", "Scene", "RollTable"],
+                            "enum": ["actor", "item", "journal_entry", "scene", "rollable_table"],
                             "description": "Type of documents the folders contain"
                         },
                         "parent_folder": {
@@ -1101,7 +1159,7 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                         },
                         "document_type": {
                             "type": "string",
-                            "enum": ["Actor", "Item", "JournalEntry", "Scene", "RollTable"],
+                            "enum": ["actor", "item", "journal_entry", "scene", "rollable_table"],
                             "description": "Type of documents this folder will contain"
                         },
                         "parent_folder": {
@@ -1164,6 +1222,49 @@ pub fn get_ollama_tool_definitions() -> Vec<OllamaToolDefinition> {
                         }
                     },
                     "required": ["folder_id"]
+                }),
+            },
+        },
+        // User and Ownership Management
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "list_users".to_string(),
+                description: "List all users in the Foundry VTT world. Returns user IDs, names, roles, and online status.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "include_inactive": {
+                            "type": "boolean",
+                            "description": "Include users who are not currently online (default: true)"
+                        }
+                    }
+                }),
+            },
+        },
+        OllamaToolDefinition {
+            tool_type: "function".to_string(),
+            function: OllamaFunctionDefinition {
+                name: "update_ownership".to_string(),
+                description: "Update ownership permissions for a Foundry VTT document. Permission levels: 0=NONE, 1=LIMITED, 2=OBSERVER, 3=OWNER. Use 'default' key to set base permissions for all users.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "document_type": {
+                            "type": "string",
+                            "enum": ["actor", "item", "journal_entry", "scene", "rollable_table"],
+                            "description": "Type of document"
+                        },
+                        "document_id": {
+                            "type": "string",
+                            "description": "The document's ID"
+                        },
+                        "ownership": {
+                            "type": "object",
+                            "description": "Ownership mapping. Keys are user IDs or 'default'. Values are 0=NONE, 1=LIMITED, 2=OBSERVER, 3=OWNER."
+                        }
+                    },
+                    "required": ["document_type", "document_id", "ownership"]
                 }),
             },
         },
