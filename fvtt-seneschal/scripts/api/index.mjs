@@ -863,7 +863,18 @@ export class FvttApiWrapper {
       };
 
       if (args.img) actorData.img = args.img;
-      if (args.data) actorData.system = args.data;
+
+      // Handle data and embedded items separately
+      // Items must be at document root level, not inside system
+      if (args.data) {
+        const { items, ...systemData } = args.data;
+        if (Object.keys(systemData).length > 0) {
+          actorData.system = systemData;
+        }
+        if (items && Array.isArray(items) && items.length > 0) {
+          actorData.items = items;
+        }
+      }
 
       if (!args.pack_id) {
         const folderId = this._resolveFolderId(args.folder, "Actor");
@@ -904,12 +915,40 @@ export class FvttApiWrapper {
       const updateData = {};
       if (args.name !== undefined) updateData.name = args.name;
       if (args.img !== undefined) updateData.img = args.img;
-      if (args.data) updateData.system = args.data;
+
+      // Handle data and embedded items separately
+      // Items must use embedded document API, not direct system update
+      let itemsToCreate = [];
+      let itemsToUpdate = [];
+      if (args.data) {
+        const { items, ...systemData } = args.data;
+        if (Object.keys(systemData).length > 0) {
+          updateData.system = systemData;
+        }
+        if (items && Array.isArray(items)) {
+          // Items with _id are updates, items without are creates
+          itemsToUpdate = items.filter((i) => i._id);
+          itemsToCreate = items.filter((i) => !i._id);
+        }
+      }
+
       if (!args.pack_id) {
         this._applyFolderUpdate(updateData, args.folder, "Actor");
       }
 
-      await actor.update(updateData);
+      // Update actor data first
+      if (Object.keys(updateData).length > 0) {
+        await actor.update(updateData);
+      }
+
+      // Then handle embedded items via Foundry's embedded document API
+      if (itemsToUpdate.length > 0) {
+        await actor.updateEmbeddedDocuments("Item", itemsToUpdate);
+      }
+      if (itemsToCreate.length > 0) {
+        await actor.createEmbeddedDocuments("Item", itemsToCreate);
+      }
+
       return { success: true };
     } catch (error) {
       return { error: error.message };

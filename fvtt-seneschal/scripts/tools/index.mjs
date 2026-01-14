@@ -133,7 +133,12 @@ export class ToolExecutor {
         return FvttApiWrapper.createJournalEntry(args, userContext);
 
       case "get_journal":
-        return FvttApiWrapper.getDocument("journal_entry", args.journal_id, args.pack_id, userContext);
+        return FvttApiWrapper.getDocument(
+          "journal_entry",
+          args.journal_id,
+          args.pack_id,
+          userContext
+        );
 
       case "update_journal":
         return FvttApiWrapper.updateJournalEntry(args, userContext);

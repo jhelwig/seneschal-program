@@ -329,7 +329,10 @@ mod tests {
     fn test_tool_name_string_conversion() {
         assert_eq!(ToolName::DocumentSearch.to_string(), "document_search");
         assert_eq!(ToolName::FvttRead.to_string(), "fvtt_read");
-        assert_eq!(ToolName::TravellerMapSearch.to_string(), "traveller_map_search");
+        assert_eq!(
+            ToolName::TravellerMapSearch.to_string(),
+            "traveller_map_search"
+        );
         assert_eq!(ToolName::CreateActor.to_string(), "create_actor");
     }
 
@@ -339,10 +342,7 @@ mod tests {
             ToolName::from_str("document_search").unwrap(),
             ToolName::DocumentSearch
         );
-        assert_eq!(
-            ToolName::from_str("fvtt_read").unwrap(),
-            ToolName::FvttRead
-        );
+        assert_eq!(ToolName::from_str("fvtt_read").unwrap(), ToolName::FvttRead);
         assert!(ToolName::from_str("unknown_tool").is_err());
     }
 }

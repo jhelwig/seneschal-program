@@ -2,7 +2,10 @@
 
 use std::collections::HashMap;
 
-use crate::tools::{registry::{ToolMetadata, ToolName}, ToolLocation};
+use crate::tools::{
+    ToolLocation,
+    registry::{ToolMetadata, ToolName},
+};
 
 pub fn register(registry: &mut HashMap<ToolName, ToolMetadata>) {
     let tools = [
@@ -25,25 +28,27 @@ fn document_search() -> ToolMetadata {
         mcp_enabled: true,
         description: "Search game documents (rulebooks, scenarios) for information using semantic similarity. Good for conceptual queries like 'how do jump drives work' or 'rules for combat'. Returns relevant text chunks.",
         mcp_suffix: None,
-        parameters: || serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query"
+        parameters: || {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional tags to filter results"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results (default 10)"
+                    }
                 },
-                "tags": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional tags to filter results"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of results (default 10)"
-                }
-            },
-            "required": ["query"]
-        }),
+                "required": ["query"]
+            })
+        },
     }
 }
 
@@ -55,28 +60,30 @@ fn document_search_text() -> ToolMetadata {
         mcp_enabled: true,
         description: "Search documents using exact keyword matching. Use this for specific names, terms, or when semantic search doesn't find what you need. Supports filtering by section (e.g., 'Adventure 1'). Good for finding specific characters like 'Anders Casarii' or references within a particular section.",
         mcp_suffix: None,
-        parameters: || serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Keywords to search for (exact matching)"
+        parameters: || {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Keywords to search for (exact matching)"
+                    },
+                    "section": {
+                        "type": "string",
+                        "description": "Optional: filter to content within this section (e.g., 'Adventure 1')"
+                    },
+                    "document_id": {
+                        "type": "string",
+                        "description": "Optional: limit search to a specific document"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results (default 10)"
+                    }
                 },
-                "section": {
-                    "type": "string",
-                    "description": "Optional: filter to content within this section (e.g., 'Adventure 1')"
-                },
-                "document_id": {
-                    "type": "string",
-                    "description": "Optional: limit search to a specific document"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of results (default 10)"
-                }
-            },
-            "required": ["query"]
-        }),
+                "required": ["query"]
+            })
+        },
     }
 }
 
@@ -88,20 +95,22 @@ fn document_get() -> ToolMetadata {
         mcp_enabled: true,
         description: "Get document metadata or retrieve the full text content of a specific page. Use 'page' parameter to read page content - this is the primary way to read specific pages from rulebooks and scenarios.",
         mcp_suffix: None,
-        parameters: || serde_json::json!({
-            "type": "object",
-            "properties": {
-                "document_id": {
-                    "type": "string",
-                    "description": "The document ID (get from document_list or document_find)"
+        parameters: || {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "document_id": {
+                        "type": "string",
+                        "description": "The document ID (get from document_list or document_find)"
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "Page number to retrieve. If specified, returns the full text content of that page. If omitted, returns document metadata only."
+                    }
                 },
-                "page": {
-                    "type": "integer",
-                    "description": "Page number to retrieve. If specified, returns the full text content of that page. If omitted, returns document metadata only."
-                }
-            },
-            "required": ["document_id"]
-        }),
+                "required": ["document_id"]
+            })
+        },
     }
 }
 
@@ -113,16 +122,18 @@ fn document_list() -> ToolMetadata {
         mcp_enabled: true,
         description: "List all available documents (rulebooks, scenarios) with their IDs and titles.",
         mcp_suffix: None,
-        parameters: || serde_json::json!({
-            "type": "object",
-            "properties": {
-                "tags": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional tags to filter documents"
+        parameters: || {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "tags": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional tags to filter documents"
+                    }
                 }
-            }
-        }),
+            })
+        },
     }
 }
 
@@ -134,15 +145,17 @@ fn document_find() -> ToolMetadata {
         mcp_enabled: true,
         description: "Find documents by title (case-insensitive partial match). Returns document IDs and metadata.",
         mcp_suffix: None,
-        parameters: || serde_json::json!({
-            "type": "object",
-            "properties": {
-                "title": {
-                    "type": "string",
-                    "description": "The document title to search for (partial match)"
-                }
-            },
-            "required": ["title"]
-        }),
+        parameters: || {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "The document title to search for (partial match)"
+                    }
+                },
+                "required": ["title"]
+            })
+        },
     }
 }

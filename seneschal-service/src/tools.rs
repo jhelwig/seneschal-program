@@ -16,7 +16,9 @@ pub mod tool_defs;
 pub mod traveller;
 pub mod traveller_map;
 
-pub use definitions::{OllamaFunctionDefinition, OllamaToolDefinition, get_ollama_tool_definitions};
+pub use definitions::{
+    OllamaFunctionDefinition, OllamaToolDefinition, get_ollama_tool_definitions,
+};
 pub use registry::REGISTRY;
 pub use traveller::TravellerTool;
 pub use traveller_map::{TravellerMapClient, TravellerMapTool};
