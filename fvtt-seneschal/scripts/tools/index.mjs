@@ -112,6 +112,22 @@ export class ToolExecutor {
       case "list_actors":
         return FvttApiWrapper.listDocuments("actor", args, userContext);
 
+      // Actor Embedded Item CRUD
+      case "add_actor_item":
+        return FvttApiWrapper.addActorItem(args);
+
+      case "get_actor_item":
+        return FvttApiWrapper.getActorItem(args);
+
+      case "update_actor_item":
+        return FvttApiWrapper.updateActorItem(args);
+
+      case "delete_actor_item":
+        return FvttApiWrapper.deleteActorItem(args);
+
+      case "list_actor_items":
+        return FvttApiWrapper.listActorItems(args);
+
       // Item CRUD
       case "create_item":
         return FvttApiWrapper.createItem(args, userContext);

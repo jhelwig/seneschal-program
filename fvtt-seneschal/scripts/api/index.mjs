@@ -955,6 +955,192 @@ export class FvttApiWrapper {
     }
   }
 
+  // ==========================================
+  // Actor Embedded Item CRUD
+  // ==========================================
+
+  /**
+   * Add an embedded item to an actor
+   * @param {Object} args - Item creation arguments
+   * @param {string} args.actor_id - The actor's document ID
+   * @param {string} args.name - Name of the item
+   * @param {string} args.item_type - Type of item
+   * @param {string} [args.img] - Item image path
+   * @param {Object} [args.data] - Item system data
+   * @param {string} [args.pack_id] - Compendium pack ID (optional)
+   * @returns {Promise<Object>}
+   */
+  static async addActorItem(args) {
+    try {
+      let actor;
+      if (args.pack_id) {
+        const validation = this._validatePackForWrite(args.pack_id);
+        if (validation.error) return validation;
+        actor = await validation.pack.getDocument(args.actor_id);
+      } else {
+        actor = game.actors.get(args.actor_id);
+      }
+      if (!actor) return { error: "Actor not found" };
+
+      const itemData = {
+        name: args.name,
+        type: args.item_type,
+      };
+
+      if (args.img) itemData.img = args.img;
+      if (args.data) itemData.system = args.data;
+
+      const [item] = await actor.createEmbeddedDocuments("Item", [itemData]);
+      return { success: true, item_id: item.id, name: item.name };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  /**
+   * Get a specific embedded item from an actor
+   * @param {Object} args - Get arguments
+   * @param {string} args.actor_id - The actor's document ID
+   * @param {string} args.item_id - The embedded item's document ID
+   * @param {string} [args.pack_id] - Compendium pack ID (optional)
+   * @returns {Promise<Object>}
+   */
+  static async getActorItem(args) {
+    try {
+      let actor;
+      if (args.pack_id) {
+        const pack = this._getCompendiumPack(args.pack_id);
+        if (!pack) return { error: `Pack not found: ${args.pack_id}` };
+        actor = await pack.getDocument(args.actor_id);
+      } else {
+        actor = game.actors.get(args.actor_id);
+      }
+      if (!actor) return { error: "Actor not found" };
+
+      const item = actor.items.get(args.item_id);
+      if (!item) return { error: "Item not found on actor" };
+
+      return item.toObject();
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  /**
+   * Update an embedded item on an actor
+   * @param {Object} args - Update arguments
+   * @param {string} args.actor_id - The actor's document ID
+   * @param {string} args.item_id - The embedded item's document ID
+   * @param {string} [args.name] - New name for the item
+   * @param {string} [args.img] - New image path
+   * @param {Object} [args.data] - Item system data to update
+   * @param {string} [args.pack_id] - Compendium pack ID (optional)
+   * @returns {Promise<Object>}
+   */
+  static async updateActorItem(args) {
+    try {
+      let actor;
+      if (args.pack_id) {
+        const validation = this._validatePackForWrite(args.pack_id);
+        if (validation.error) return validation;
+        actor = await validation.pack.getDocument(args.actor_id);
+      } else {
+        actor = game.actors.get(args.actor_id);
+      }
+      if (!actor) return { error: "Actor not found" };
+
+      const item = actor.items.get(args.item_id);
+      if (!item) return { error: "Item not found on actor" };
+
+      const updateData = { _id: args.item_id };
+      if (args.name !== undefined) updateData.name = args.name;
+      if (args.img !== undefined) updateData.img = args.img;
+      if (args.data) updateData.system = args.data;
+
+      await actor.updateEmbeddedDocuments("Item", [updateData]);
+      return { success: true };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  /**
+   * Delete an embedded item from an actor
+   * @param {Object} args - Delete arguments
+   * @param {string} args.actor_id - The actor's document ID
+   * @param {string} args.item_id - The embedded item's document ID to delete
+   * @param {string} [args.pack_id] - Compendium pack ID (optional)
+   * @returns {Promise<Object>}
+   */
+  static async deleteActorItem(args) {
+    try {
+      let actor;
+      if (args.pack_id) {
+        const validation = this._validatePackForWrite(args.pack_id);
+        if (validation.error) return validation;
+        actor = await validation.pack.getDocument(args.actor_id);
+      } else {
+        actor = game.actors.get(args.actor_id);
+      }
+      if (!actor) return { error: "Actor not found" };
+
+      const item = actor.items.get(args.item_id);
+      if (!item) return { error: "Item not found on actor" };
+
+      await actor.deleteEmbeddedDocuments("Item", [args.item_id]);
+      return { success: true };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  /**
+   * List all embedded items on an actor
+   * @param {Object} args - List arguments
+   * @param {string} args.actor_id - The actor's document ID
+   * @param {string} [args.item_type] - Filter by item type
+   * @param {string} [args.name] - Filter by name (partial match)
+   * @param {string} [args.pack_id] - Compendium pack ID (optional)
+   * @returns {Promise<Object>}
+   */
+  static async listActorItems(args) {
+    try {
+      let actor;
+      if (args.pack_id) {
+        const pack = this._getCompendiumPack(args.pack_id);
+        if (!pack) return { error: `Pack not found: ${args.pack_id}` };
+        actor = await pack.getDocument(args.actor_id);
+      } else {
+        actor = game.actors.get(args.actor_id);
+      }
+      if (!actor) return { error: "Actor not found" };
+
+      let items = Array.from(actor.items);
+
+      // Filter by item type
+      if (args.item_type) {
+        items = items.filter((i) => i.type === args.item_type);
+      }
+
+      // Filter by name (partial match, case-insensitive)
+      if (args.name) {
+        const nameLower = args.name.toLowerCase();
+        items = items.filter((i) => i.name?.toLowerCase().includes(nameLower));
+      }
+
+      return {
+        items: items.map((i) => ({
+          id: i.id,
+          name: i.name,
+          type: i.type,
+          img: i.img || null,
+        })),
+      };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
   /**
    * Create an item
    * @param {Object} args - Item creation arguments

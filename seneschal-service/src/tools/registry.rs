@@ -108,6 +108,15 @@ pub enum ToolName {
     ListActors,
 
     // ==========================================
+    // Actor Embedded Item CRUD (External)
+    // ==========================================
+    AddActorItem,
+    GetActorItem,
+    UpdateActorItem,
+    DeleteActorItem,
+    ListActorItems,
+
+    // ==========================================
     // Item CRUD (External)
     // ==========================================
     CreateItem,
