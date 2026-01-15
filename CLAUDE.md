@@ -59,11 +59,13 @@ POST /api/chat → SeneschalService.chat() → run_agentic_loop()
 |--------|----------------|
 | `service.rs` | Main coordinator, agentic loop, conversation management |
 | `api.rs` | HTTP routes (chat, documents, images, search, models) |
+| `mcp.rs` | MCP server with Streamable HTTP transport |
 | `db.rs` | SQLite schema, embeddings storage, conversations |
 | `ingestion.rs` | Document processing (PDF/EPUB/MD), chunking, image extraction |
 | `search.rs` | Vector semantic search with access control filtering |
 | `ollama.rs` | Ollama LLM client, streaming, tool call parsing |
-| `tools.rs` | Tool definitions, internal vs external classification |
+| `tools/registry.rs` | Unified tool registry with type-safe enum naming |
+| `tools/tool_defs/` | Categorized tool definitions (fvtt_crud, traveller, traveller_map, etc.) |
 | `config.rs` | Layered config (defaults → config.toml → env vars) |
 
 ### Image Extraction Purpose
@@ -78,11 +80,35 @@ This means "render the page region" is **never** an acceptable approach for imag
 
 ### Tool Classification
 
-Tools are classified as **internal** (executed by backend) or **external** (requested from FVTT client):
-- Internal: `search`, `system_schema`, `traveller_*` tools
-- External: FVTT read/write operations, dice rolls
+Tools are classified as **internal** (executed by backend) or **external** (executed in FVTT client):
+- Internal: `search`, `traveller_*`, `traveller_map_*` tools
+- External: FVTT CRUD operations (actors, items, journals, scenes, tables), dice rolls, asset browsing
 
-### Access Levels
+### External Tool Execution
+
+External tools execute in the FVTT client (user's browser) via WebSocket:
+
+```
+Backend                              FVTT Module (browser)
+   │                                        │
+   │  chat_tool_call {tool, args}           │
+   │ ─────────────────────────────────────► │
+   │                                        ├─ Rebuild user context
+   │                                        ├─ ToolExecutor.execute()
+   │                                        ├─ FvttApiWrapper method
+   │                                        ├─ FVTT API call (permissions enforced here)
+   │  tool_result {result}                  │
+   │ ◄───────────────────────────────────── │
+   │                                        │
+```
+
+**Important**: The FVTT module does **not** implement its own permission checks. FVTT's native permission system enforces access when API calls are made. This means:
+- Players CAN modify actors they own (their characters)
+- Players CAN manage embedded items on their owned actors
+- Document ownership and permission levels are respected automatically
+- GMs have full access to all documents
+
+### Document Access Levels (RAG)
 
 ```rust
 pub enum AccessLevel {
@@ -93,7 +119,41 @@ pub enum AccessLevel {
 }
 ```
 
-Used for document filtering and tool permissions. Maps to FVTT user roles.
+Controls which ingested documents the LLM can retrieve via semantic search. Maps to FVTT user roles for filtering search results. This is **separate** from FVTT's native permission system for tool execution (see External Tool Execution above).
+
+### MCP Server
+
+The backend includes an MCP (Model Context Protocol) server for integration with Claude Desktop and other MCP clients:
+
+- **Endpoint**: `/mcp` (configurable)
+- **Transport**: Streamable HTTP (MCP 2024-11-05 specification)
+- **Tool sharing**: Uses the same unified tool registry as the Ollama agentic loop
+- **External tools**: Bridge to FVTT via GM WebSocket connection (requires active GM session)
+
+Configuration:
+```bash
+SENESCHAL_MCP__ENABLED=true
+SENESCHAL_MCP__PATH=/mcp
+```
+
+### Unified Tool Registry
+
+All tools are defined in a centralized registry (`tools/registry.rs`) with type-safe enum naming:
+
+```rust
+pub enum ToolName {
+    DocumentSearch,
+    CreateActor,
+    AddActorItem,
+    // ... all tools as enum variants
+}
+```
+
+Benefits:
+- Single source of truth for both Ollama and MCP
+- Impossible to have string name mismatches (compile-time checked)
+- Tools can be enabled/disabled independently per protocol (`ollama_enabled`, `mcp_enabled`)
+- Definitions organized by category in `tools/tool_defs/`
 
 ## Configuration
 
