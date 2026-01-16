@@ -1,0 +1,74 @@
+<form class="seneschal-backend-settings">
+  {{#if error}}
+  <div class="notification error">
+    <i class="fas fa-exclamation-triangle"></i>
+    {{error}}
+  </div>
+  {{/if}}
+
+  {{#if isLoading}}
+  <div class="seneschal-loading">
+    <i class="fas fa-spinner fa-spin"></i>
+    {{localize "SENESCHAL.Settings.Backend.Loading"}}
+  </div>
+  {{else}}
+  <div class="settings-sections">
+    {{#each categories}}
+    <section class="settings-section">
+      <h3 class="section-header">{{this.label}}</h3>
+      {{#each this.fields}}
+      <div class="form-group">
+        <label>
+          {{this.label}}
+          {{#if this.isOverridden}}
+          <span class="overridden-indicator" title="{{localize 'SENESCHAL.Settings.Backend.Overridden'}}">
+            <i class="fas fa-database"></i>
+          </span>
+          {{/if}}
+        </label>
+        <div class="form-fields">
+          {{#if (eq this.type "text")}}
+          <input type="text" name="setting.{{@key}}" value="{{this.value}}">
+          {{else if (eq this.type "number")}}
+          <input type="number" name="setting.{{@key}}" value="{{this.value}}"
+                 min="{{this.min}}" max="{{this.max}}" step="{{this.step}}">
+          {{else if (eq this.type "checkbox")}}
+          <input type="checkbox" name="setting.{{@key}}" {{#if this.value}}checked{{/if}}>
+          {{else if (eq this.type "select")}}
+          <select name="setting.{{@key}}">
+            {{#if this.allowEmpty}}
+            <option value="" {{#unless this.value}}selected{{/unless}}>
+              {{localize "SENESCHAL.Settings.Backend.Models.NoModel"}}
+            </option>
+            {{/if}}
+            {{#each this.options}}
+            <option value="{{this.value}}" {{#if (eq this.value ../value)}}selected{{/if}}>
+              {{this.label}}
+            </option>
+            {{/each}}
+          </select>
+          {{/if}}
+          {{#if this.isOverridden}}
+          <button type="button" class="reset-setting" data-key="{{@key}}"
+                  title="{{localize 'SENESCHAL.Settings.Backend.ResetToDefault'}}">
+            <i class="fas fa-undo"></i>
+          </button>
+          {{/if}}
+        </div>
+        <p class="notes">{{this.hint}}</p>
+      </div>
+      {{/each}}
+    </section>
+    {{/each}}
+  </div>
+  {{/if}}
+
+  <footer class="sheet-footer flexrow">
+    <button type="button" class="seneschal-refresh-settings">
+      <i class="fas fa-sync"></i> {{localize "SENESCHAL.Settings.Backend.Refresh"}}
+    </button>
+    <button type="submit" {{#if isLoading}}disabled{{/if}}>
+      <i class="fas fa-save"></i> {{localize "SENESCHAL.Settings.Backend.Save"}}
+    </button>
+  </footer>
+</form>

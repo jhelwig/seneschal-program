@@ -2,8 +2,6 @@
  * FVTT API wrapper for document operations
  */
 
-import { SETTINGS } from "../constants.mjs";
-import { getSetting } from "../utils.mjs";
 import { MGT2E_ENHANCEMENTS } from "../system/mgt2e.mjs";
 
 /**
@@ -467,15 +465,11 @@ export class FvttApiWrapper {
       const buffer = await blob.arrayBuffer();
       const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
 
-      // Get vision model from FVTT settings
-      const visionModel = getSetting(SETTINGS.VISION_MODEL);
-
       return {
         image_path: imagePath,
         image_data: base64,
         mime_type: blob.type,
         size: blob.size,
-        vision_model: visionModel || null,
       };
     } catch (error) {
       return { error: error.message };

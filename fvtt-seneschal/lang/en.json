@@ -40,6 +40,78 @@
         "Parameters": "Size",
         "Quantization": "Quant"
       },
+      "Backend": {
+        "Title": "Backend Settings",
+        "MenuName": "Backend Configuration",
+        "MenuLabel": "Configure Backend",
+        "MenuHint": "Configure the Seneschal backend service settings",
+        "Loading": "Loading settings...",
+        "Refresh": "Refresh",
+        "Save": "Save Settings",
+        "SaveSuccess": "Settings saved successfully.",
+        "NoChanges": "No changes to save.",
+        "ResetToDefault": "Reset to default",
+        "ResetSuccess": "Setting {key} reset to default.",
+        "Overridden": "Custom value (click reset to revert to default)",
+        "InvalidBackendUrl": "Invalid backend URL configured.",
+        "Section": {
+          "Models": "Models",
+          "LLM": "LLM Settings",
+          "Embeddings": "Text Chunking",
+          "Agentic": "Agentic Loop",
+          "Limits": "Limits",
+          "Advanced": "Advanced"
+        },
+        "Models": {
+          "ChatModel": "Chat Model",
+          "ChatModelHint": "The LLM to use for chat conversations",
+          "VisionModel": "Vision Model",
+          "VisionModelHint": "Model for image captioning during document ingestion (e.g., llava, moondream). Leave empty to skip captioning.",
+          "EmbeddingModel": "Embedding Model",
+          "EmbeddingModelHint": "Model for generating text embeddings for document search (e.g., nomic-embed-text)",
+          "NoModel": "-- None --"
+        },
+        "Ollama": {
+          "BaseUrl": "Ollama URL",
+          "BaseUrlHint": "URL of the Ollama service for LLM inference",
+          "Temperature": "Temperature",
+          "TemperatureHint": "Controls randomness in responses (0.0 = deterministic, 2.0 = very random)",
+          "RequestTimeout": "Request Timeout (seconds)",
+          "RequestTimeoutHint": "Maximum time to wait for Ollama responses"
+        },
+        "Embeddings": {
+          "ChunkSize": "Chunk Size (words)",
+          "ChunkSizeHint": "Target size for document text chunks",
+          "ChunkOverlap": "Chunk Overlap (words)",
+          "ChunkOverlapHint": "Overlap between adjacent chunks for context continuity"
+        },
+        "Agentic": {
+          "HardTimeout": "Hard Timeout (seconds)",
+          "HardTimeoutHint": "Maximum total time for an agentic loop before forced termination",
+          "ExternalToolTimeout": "External Tool Timeout (seconds)",
+          "ExternalToolTimeoutHint": "Maximum time to wait for FVTT tool execution",
+          "ToolCallPauseThreshold": "Tool Call Pause Threshold",
+          "ToolCallPauseThresholdHint": "Number of tool calls before prompting to continue (use max value to disable)"
+        },
+        "Limits": {
+          "MaxDocumentSize": "Max Document Size (bytes)",
+          "MaxDocumentSizeHint": "Maximum file size for document uploads (100MB = 104857600)",
+          "ConversationTtl": "Conversation TTL (seconds)",
+          "ConversationTtlHint": "How long to keep conversations before automatic cleanup (7 days = 604800)",
+          "MaxConversationsPerUser": "Max Conversations Per User",
+          "MaxConversationsPerUserHint": "Maximum stored conversations per user (0 = unlimited)"
+        },
+        "Advanced": {
+          "McpEnabled": "Enable MCP Server",
+          "McpEnabledHint": "Enable the Model Context Protocol server for external integrations",
+          "McpPath": "MCP Path",
+          "McpPathHint": "URL path for the MCP server endpoint",
+          "TravellerMapUrl": "Traveller Map URL",
+          "TravellerMapUrlHint": "Base URL for the Traveller Map API",
+          "TravellerMapTimeout": "Traveller Map Timeout (seconds)",
+          "TravellerMapTimeoutHint": "Request timeout for Traveller Map API calls"
+        }
+      },
       "EnablePlayerAccess": "Allow Players to Use Seneschal Program",
       "EnablePlayerAccessHint": "When enabled, players can access Seneschal Program with limited permissions",
       "MaxActionsPerRequest": "Maximum Actions Per Request",

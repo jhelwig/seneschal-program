@@ -22,7 +22,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
-use crate::config::AppConfig;
+use crate::config::RuntimeConfig;
 use crate::error::{I18nError, ServiceError};
 use crate::service::SeneschalService;
 use crate::websocket::{WebSocketManager, handle_ws_connection};
@@ -31,6 +31,7 @@ pub mod conversations;
 pub mod documents;
 pub mod images;
 pub mod search;
+pub mod settings;
 
 use conversations::{get_conversation_handler, list_conversations_handler};
 use documents::{
@@ -43,6 +44,7 @@ use images::{
     get_image_data_handler, get_image_handler, list_images_handler, search_images_handler,
 };
 use search::search_handler;
+use settings::{get_settings_handler, update_settings_handler};
 
 /// Application state
 pub struct AppState {
@@ -59,7 +61,7 @@ impl AppState {
 }
 
 /// Build the API router
-pub fn router(service: Arc<SeneschalService>, config: &AppConfig) -> Router {
+pub fn router(service: Arc<SeneschalService>, runtime_config: &RuntimeConfig) -> Router {
     let ws_manager = service.ws_manager.clone();
 
     let state = Arc::new(AppState {
@@ -74,7 +76,7 @@ pub fn router(service: Arc<SeneschalService>, config: &AppConfig) -> Router {
         .allow_headers(Any);
 
     // Use the configured max document size for uploads
-    let max_body_size = config.limits.max_document_size_bytes as usize;
+    let max_body_size = runtime_config.dynamic().limits.max_document_size_bytes as usize;
 
     let api_routes = Router::new()
         // Model endpoints
@@ -108,7 +110,10 @@ pub fn router(service: Arc<SeneschalService>, config: &AppConfig) -> Router {
         .route("/images/{id}/deliver", post(deliver_image_handler))
         // Conversation endpoints
         .route("/conversations", get(list_conversations_handler))
-        .route("/conversations/{id}", get(get_conversation_handler));
+        .route("/conversations/{id}", get(get_conversation_handler))
+        // Settings endpoints
+        .route("/settings", get(get_settings_handler))
+        .route("/settings", put(update_settings_handler));
 
     Router::new()
         .route("/health", get(health_handler))

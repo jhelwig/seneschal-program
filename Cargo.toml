@@ -98,3 +98,6 @@ urlencoding = "2.1"
 
 # Enum utilities (for tool registry)
 strum = { version = "0.26", features = ["derive"] }
+
+# Lock-free atomic swap for hot reload
+arc-swap = "1.7"

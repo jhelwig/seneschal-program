@@ -454,6 +454,31 @@ impl Database {
             })?;
         }
 
+        // Migration: Add settings table for FVTT-managed backend configuration
+        let has_settings_table: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+            > 0;
+
+        if !has_settings_table {
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                "#,
+            )
+            .map_err(|e| DatabaseError::Migration {
+                message: format!("Failed to create settings table: {}", e),
+            })?;
+        }
+
         Ok(())
     }
 
@@ -1751,6 +1776,65 @@ impl Database {
             .map_err(DatabaseError::Query)?;
 
         Ok(rows > 0)
+    }
+
+    // ==================== Settings CRUD ====================
+
+    /// Get all settings as a map
+    pub fn get_all_settings(
+        &self,
+    ) -> ServiceResult<std::collections::HashMap<String, serde_json::Value>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT key, value FROM settings")
+            .map_err(DatabaseError::Query)?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                let key: String = row.get(0)?;
+                let value_str: String = row.get(1)?;
+                Ok((key, value_str))
+            })
+            .map_err(DatabaseError::Query)?;
+
+        let mut settings = std::collections::HashMap::new();
+        for row in rows {
+            let (key, value_str) = row.map_err(DatabaseError::Query)?;
+            if let Ok(value) = serde_json::from_str(&value_str) {
+                settings.insert(key, value);
+            }
+        }
+
+        Ok(settings)
+    }
+
+    /// Set multiple settings in a single transaction
+    /// Null values delete the setting (revert to default)
+    pub fn set_settings(
+        &self,
+        settings: std::collections::HashMap<String, serde_json::Value>,
+    ) -> ServiceResult<()> {
+        let conn = self.conn.lock().unwrap();
+
+        for (key, value) in settings {
+            if value.is_null() {
+                // Null means delete (revert to default)
+                conn.execute("DELETE FROM settings WHERE key = ?1", params![key])
+                    .map_err(DatabaseError::Query)?;
+            } else {
+                let value_str =
+                    serde_json::to_string(&value).map_err(DatabaseError::Serialization)?;
+                conn.execute(
+                    "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, datetime('now')) \
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                    params![key, value_str],
+                )
+                .map_err(DatabaseError::Query)?;
+            }
+        }
+
+        Ok(())
     }
 }
 

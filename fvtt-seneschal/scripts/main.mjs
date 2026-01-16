@@ -14,14 +14,14 @@ import { ToolExecutor } from "./tools/index.mjs";
 import { SeneschalSidebarTab } from "./ui/sidebar.mjs";
 import { DocumentManagementDialog } from "./ui/dialogs/documents.mjs";
 import { ImageBrowserDialog } from "./ui/dialogs/images.mjs";
-import { ModelSelectionDialog } from "./ui/dialogs/models.mjs";
+import { BackendSettingsDialog } from "./ui/dialogs/settings.mjs";
 
 // Re-export for advanced usage
 export {
   SeneschalSidebarTab,
   DocumentManagementDialog,
   ImageBrowserDialog,
-  ModelSelectionDialog,
+  BackendSettingsDialog,
   BackendClient,
   ConversationSession,
   FvttApiWrapper,
@@ -88,31 +88,13 @@ function registerSettings() {
     default: "",
   });
 
-  game.settings.register(MODULE_ID, SETTINGS.SELECTED_MODEL, {
-    name: game.i18n.localize("SENESCHAL.Settings.SelectedModel"),
-    hint: game.i18n.localize("SENESCHAL.Settings.SelectedModelHint"),
-    scope: "world",
-    config: false, // Not shown in main config, accessed via menu
-    type: String,
-    default: "",
-  });
-
-  game.settings.register(MODULE_ID, SETTINGS.VISION_MODEL, {
-    name: game.i18n.localize("SENESCHAL.Settings.VisionModel"),
-    hint: game.i18n.localize("SENESCHAL.Settings.VisionModelHint"),
-    scope: "world",
-    config: false, // Not shown in main config, accessed via menu
-    type: String,
-    default: "",
-  });
-
-  // Register settings menu for model selection
-  game.settings.registerMenu(MODULE_ID, "modelSelection", {
-    name: game.i18n.localize("SENESCHAL.Settings.ModelSelection.Name"),
-    label: game.i18n.localize("SENESCHAL.Settings.ModelSelection.Label"),
-    hint: game.i18n.localize("SENESCHAL.Settings.ModelSelection.Hint"),
-    icon: "fas fa-robot",
-    type: ModelSelectionDialog,
+  // Register settings menu for backend configuration
+  game.settings.registerMenu(MODULE_ID, "backendSettings", {
+    name: game.i18n.localize("SENESCHAL.Settings.Backend.MenuName"),
+    label: game.i18n.localize("SENESCHAL.Settings.Backend.MenuLabel"),
+    hint: game.i18n.localize("SENESCHAL.Settings.Backend.MenuHint"),
+    icon: "fas fa-cogs",
+    type: BackendSettingsDialog,
     restricted: true,
   });
 

@@ -2,8 +2,7 @@
  * Document management dialog
  */
 
-import { MODULE_ID, SETTINGS } from "../../constants.mjs";
-import { getSetting } from "../../utils.mjs";
+import { MODULE_ID } from "../../constants.mjs";
 import { BackendClient } from "../../clients/backend.mjs";
 import { ImageBrowserDialog } from "./images.mjs";
 
@@ -395,16 +394,12 @@ export class DocumentManagementDialog extends Application {
     this.render(false);
 
     try {
-      // Get vision model from settings
-      const visionModel = getSetting(SETTINGS.VISION_MODEL);
-
       await this.backendClient.uploadDocument(
         file,
         {
           title,
           accessLevel,
           tags: tags || undefined,
-          visionModel: visionModel || undefined,
         },
         (progress) => {
           this.uploadProgress = progress;
@@ -603,9 +598,7 @@ export class DocumentManagementDialog extends Application {
     this.render(false);
 
     try {
-      // Get vision model from settings
-      const visionModel = getSetting(SETTINGS.VISION_MODEL);
-      await this.backendClient.reextractDocumentImages(documentId, visionModel || null);
+      await this.backendClient.reextractDocumentImages(documentId);
       ui.notifications.info(game.i18n.localize("SENESCHAL.Documents.ReextractImagesQueued"));
       // Reload documents to show processing status, then start polling
       await this._loadDocuments();

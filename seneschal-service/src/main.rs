@@ -16,8 +16,12 @@ mod service;
 mod tools;
 mod websocket;
 
-use crate::config::AppConfig;
+use crate::config::{RuntimeConfig, StaticConfig};
+use crate::db::Database;
 use crate::service::SeneschalService;
+
+// Re-export config crate types to avoid namespace collision
+use ::config::{Config as ConfigBuilder, Environment, File};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,23 +33,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         env!("CARGO_PKG_VERSION")
     );
 
-    // Load configuration
-    let config = AppConfig::load()?;
+    // Load static configuration (server binding, storage path)
+    // We need to load this first to know where the database is
+    let static_config: StaticConfig = ConfigBuilder::builder()
+        .add_source(File::with_name("config").required(false))
+        .add_source(
+            Environment::with_prefix("SENESCHAL")
+                .separator("__")
+                .try_parsing(true),
+        )
+        .build()?
+        .try_deserialize()?;
+
     info!(
-        host = %config.server.host,
-        port = config.server.port,
-        "Configuration loaded"
+        host = %static_config.server.host,
+        port = static_config.server.port,
+        "Static configuration loaded"
     );
 
+    // Ensure data directory exists
+    std::fs::create_dir_all(&static_config.storage.data_dir)?;
+
+    // Initialize database
+    let db_path = static_config.storage.data_dir.join("seneschal.db");
+    let db = Arc::new(Database::open(&db_path)?);
+    info!(path = %db_path.display(), "Database initialized");
+
+    // Load runtime config (static + dynamic with DB overrides)
+    let runtime_config = Arc::new(RuntimeConfig::load(&db)?);
+    info!("Runtime configuration loaded with DB settings");
+
     // Initialize the service
-    let service = Arc::new(SeneschalService::new(config.clone()).await?);
+    let service = Arc::new(SeneschalService::new(db, runtime_config.clone()).await?);
 
     // Build the router
-    let mut app = api::router(service.clone(), &config);
+    let mut app = api::router(service.clone(), &runtime_config);
 
     // Add MCP endpoint if enabled
-    if config.mcp.enabled {
-        let mcp_path = config.mcp.path.clone();
+    let mcp_config = runtime_config.dynamic();
+    if mcp_config.mcp.enabled {
+        let mcp_path = mcp_config.mcp.path.clone();
         info!(path = %mcp_path, "MCP server enabled");
         app = app.nest(&mcp_path, mcp::mcp_router(service.clone()));
     }
@@ -58,8 +85,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start conversation cleanup background task
     let cleanup_service = service.clone();
-    let cleanup_interval = config.conversation.cleanup_interval();
-    let max_per_user = config.conversation.max_per_user;
+    let cleanup_interval = runtime_config.dynamic().conversation.cleanup_interval();
+    let max_per_user = runtime_config.dynamic().conversation.max_per_user;
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(cleanup_interval);
         loop {
@@ -90,7 +117,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Start the server
-    let addr = format!("{}:{}", config.server.host, config.server.port);
+    let addr = format!(
+        "{}:{}",
+        runtime_config.static_config.server.host, runtime_config.static_config.server.port
+    );
     let listener = TcpListener::bind(&addr).await?;
     info!("Listening on {}", addr);
 

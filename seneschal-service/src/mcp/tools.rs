@@ -124,7 +124,12 @@ async fn execute_external_tool(
     }
 
     // Get timeout from config
-    let timeout = state.service.config.agentic_loop.external_tool_timeout();
+    let timeout = state
+        .service
+        .runtime_config
+        .dynamic()
+        .agentic_loop
+        .external_tool_timeout();
 
     match state
         .service
@@ -762,7 +767,13 @@ fn execute_image_deliver(
     let fvtt_path = format!("assets/{}", relative_path);
 
     // Check assets access mode
-    match state.service.config.fvtt.check_assets_access() {
+    match state
+        .service
+        .runtime_config
+        .static_config
+        .fvtt
+        .check_assets_access()
+    {
         AssetsAccess::Direct(assets_dir) => {
             // Create target directory
             let full_path = assets_dir.join(&relative_path);
@@ -1181,7 +1192,13 @@ async fn execute_traveller_map_save_poster(
     let fvtt_path = format!("assets/{}", relative_path);
 
     // Save to FVTT assets
-    match state.service.config.fvtt.check_assets_access() {
+    match state
+        .service
+        .runtime_config
+        .static_config
+        .fvtt
+        .check_assets_access()
+    {
         AssetsAccess::Direct(assets_dir) => {
             let full_path = assets_dir.join(&relative_path);
             if let Some(parent) = full_path.parent()
@@ -1286,7 +1303,13 @@ async fn execute_traveller_map_save_jump_map(
     let fvtt_path = format!("assets/{}", relative_path);
 
     // Save to FVTT assets
-    match state.service.config.fvtt.check_assets_access() {
+    match state
+        .service
+        .runtime_config
+        .static_config
+        .fvtt
+        .check_assets_access()
+    {
         AssetsAccess::Direct(assets_dir) => {
             let full_path = assets_dir.join(&relative_path);
             if let Some(parent) = full_path.parent()

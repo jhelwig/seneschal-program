@@ -315,7 +315,13 @@ pub async fn deliver_image_handler(
     let fvtt_path = format!("assets/{}", relative_path);
 
     // Check if we can write directly
-    match state.service.config.fvtt.check_assets_access() {
+    match state
+        .service
+        .runtime_config
+        .static_config
+        .fvtt
+        .check_assets_access()
+    {
         AssetsAccess::Direct(assets_dir) => {
             // Create target directory
             let full_path = assets_dir.join(&relative_path);

@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::config::{AppConfig, AssetsAccess};
+use crate::config::{AssetsAccess, RuntimeConfig};
 use crate::db::{
     CaptioningStatus, Conversation, ConversationMessage, ConversationMetadata, Database, Document,
     FvttImageDescription, MessageRole, ProcessingStatus, ToolCallRecord, ToolResultRecord,
@@ -43,7 +43,7 @@ fn sanitize_map_filename(s: &str) -> String {
 
 /// Main service coordinator
 pub struct SeneschalService {
-    pub config: AppConfig,
+    pub runtime_config: Arc<RuntimeConfig>,
     pub db: Arc<Database>,
     pub ollama: Arc<OllamaClient>,
     pub search: Arc<SearchService>,
@@ -63,39 +63,33 @@ pub struct SeneschalService {
 
 impl SeneschalService {
     /// Create a new service instance
-    pub async fn new(config: AppConfig) -> ServiceResult<Self> {
+    /// Accepts a pre-opened database so that RuntimeConfig can load settings from it
+    pub async fn new(db: Arc<Database>, runtime_config: Arc<RuntimeConfig>) -> ServiceResult<Self> {
         info!("Initializing Seneschal Program service");
 
-        // Ensure data directory exists
-        std::fs::create_dir_all(&config.storage.data_dir).map_err(|e| ServiceError::Config {
-            message: format!("Failed to create data directory: {}", e),
-        })?;
-
-        // Initialize database
-        let db_path = config.storage.data_dir.join("seneschal.db");
-        let db = Arc::new(Database::open(&db_path)?);
-        info!(path = %db_path.display(), "Database initialized");
+        // Get current dynamic config
+        let dynamic = runtime_config.dynamic();
 
         // Initialize Ollama client
-        let ollama = Arc::new(OllamaClient::new(config.ollama.clone())?);
+        let ollama = Arc::new(OllamaClient::new(dynamic.ollama.clone())?);
 
         // Check Ollama availability
         if ollama.health_check().await? {
-            info!(url = %config.ollama.base_url, "Ollama is available");
+            info!(url = %dynamic.ollama.base_url, "Ollama is available");
         } else {
-            warn!(url = %config.ollama.base_url, "Ollama is not available");
+            warn!(url = %dynamic.ollama.base_url, "Ollama is not available");
         }
 
         // Initialize search service
         let search = Arc::new(
-            SearchService::new(db.clone(), &config.embeddings, &config.ollama.base_url).await?,
+            SearchService::new(db.clone(), &dynamic.embeddings, &dynamic.ollama.base_url).await?,
         );
 
         // Initialize ingestion service
         let ingestion = Arc::new(IngestionService::new(
-            &config.embeddings,
-            config.image_extraction.clone(),
-            config.storage.data_dir.clone(),
+            &dynamic.embeddings,
+            dynamic.image_extraction.clone(),
+            runtime_config.static_config.storage.data_dir.clone(),
         ));
 
         // Initialize i18n
@@ -106,16 +100,16 @@ impl SeneschalService {
 
         // Initialize Traveller Map API client
         let traveller_map_client = TravellerMapClient::new(
-            &config.traveller_map.base_url,
-            config.traveller_map.timeout_secs,
+            &dynamic.traveller_map.base_url,
+            dynamic.traveller_map.timeout_secs,
         );
         info!(
-            url = %config.traveller_map.base_url,
+            url = %dynamic.traveller_map.base_url,
             "Traveller Map API client initialized"
         );
 
         Ok(Self {
-            config,
+            runtime_config,
             db,
             ollama,
             search,
@@ -130,6 +124,24 @@ impl SeneschalService {
         })
     }
 
+    /// Update settings and hot-reload affected components
+    pub async fn update_settings(
+        &self,
+        updates: std::collections::HashMap<String, serde_json::Value>,
+    ) -> ServiceResult<()> {
+        // Persist to DB
+        self.db.set_settings(updates)?;
+
+        // Reload config from DB
+        self.runtime_config.reload_from_db(&self.db)?;
+
+        // Note: Some settings may require reinitializing clients (e.g., ollama URL change)
+        // For now, components read config fresh each request where needed
+        // Full client reinitialization can be added in future if needed
+
+        Ok(())
+    }
+
     /// Run the agentic loop with WebSocket output
     async fn run_agentic_loop_ws(
         &self,
@@ -140,12 +152,13 @@ impl SeneschalService {
         session_id: String,
         ws_manager: Arc<WebSocketManager>,
     ) {
-        let loop_config = &self.config.agentic_loop;
+        let dynamic_config = self.runtime_config.dynamic();
+        let loop_config = dynamic_config.agentic_loop.clone();
 
         // Get model's context length (do this once at the start)
         let model_name = model
             .as_deref()
-            .unwrap_or(&self.config.ollama.default_model);
+            .unwrap_or(&dynamic_config.ollama.default_model);
         let context_length = self.ollama.get_model_context_length(model_name).await;
         debug!(
             model = %model_name,
@@ -1150,7 +1163,7 @@ impl SeneschalService {
                 let fvtt_path = format!("assets/{}", relative_path);
 
                 // Check assets access mode
-                match self.config.fvtt.check_assets_access() {
+                match self.runtime_config.static_config.fvtt.check_assets_access() {
                     AssetsAccess::Direct(assets_dir) => {
                         // Create target directory
                         let full_path = assets_dir.join(&relative_path);
@@ -1486,7 +1499,7 @@ impl SeneschalService {
                 let fvtt_path = format!("assets/{}", relative_path);
 
                 // Check assets access mode
-                match self.config.fvtt.check_assets_access() {
+                match self.runtime_config.static_config.fvtt.check_assets_access() {
                     AssetsAccess::Direct(assets_dir) => {
                         // Create target directory
                         let full_path = assets_dir.join(&relative_path);
@@ -1587,7 +1600,7 @@ impl SeneschalService {
                 let fvtt_path = format!("assets/{}", relative_path);
 
                 // Check assets access mode
-                match self.config.fvtt.check_assets_access() {
+                match self.runtime_config.static_config.fvtt.check_assets_access() {
                     AssetsAccess::Direct(assets_dir) => {
                         // Create target directory
                         let full_path = assets_dir.join(&relative_path);
@@ -2077,11 +2090,12 @@ impl SeneschalService {
         vision_model: Option<String>,
     ) -> ServiceResult<Document> {
         // Check file size
-        if content.len() as u64 > self.config.limits.max_document_size_bytes {
+        let max_size = self.runtime_config.dynamic().limits.max_document_size_bytes;
+        if content.len() as u64 > max_size {
             return Err(ServiceError::Processing(
                 crate::error::ProcessingError::FileTooLarge {
                     size: content.len() as u64,
-                    max: self.config.limits.max_document_size_bytes,
+                    max: max_size,
                 },
             ));
         }
@@ -2090,7 +2104,12 @@ impl SeneschalService {
         let doc_id = uuid::Uuid::new_v4().to_string();
 
         // Save file to permanent storage immediately
-        let docs_dir = self.config.storage.data_dir.join("documents");
+        let docs_dir = self
+            .runtime_config
+            .static_config
+            .storage
+            .data_dir
+            .join("documents");
         std::fs::create_dir_all(&docs_dir)
             .map_err(|e| ServiceError::Processing(crate::error::ProcessingError::Io(e)))?;
 
@@ -2819,7 +2838,8 @@ impl SeneschalService {
 
         // Try to remove the images directory for this document
         let images_dir = self
-            .config
+            .runtime_config
+            .static_config
             .storage
             .data_dir
             .join("images")
@@ -3002,7 +3022,7 @@ impl SeneschalService {
 
     /// Run conversation cleanup
     pub fn cleanup_conversations(&self) -> ServiceResult<usize> {
-        let ttl = self.config.conversation.ttl();
+        let ttl = self.runtime_config.dynamic().conversation.ttl();
         let cutoff = Utc::now() - chrono::Duration::from_std(ttl).unwrap_or_default();
         self.db.cleanup_old_conversations(cutoff)
     }
@@ -3015,7 +3035,7 @@ impl SeneschalService {
     /// Clone for spawning tasks
     fn clone_for_task(&self) -> Self {
         Self {
-            config: self.config.clone(),
+            runtime_config: self.runtime_config.clone(),
             db: self.db.clone(),
             ollama: self.ollama.clone(),
             search: self.search.clone(),

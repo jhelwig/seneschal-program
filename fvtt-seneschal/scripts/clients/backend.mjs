@@ -68,27 +68,16 @@ export class BackendClient {
   }
 
   /**
-   * Get the selected model
-   * @returns {string|null}
-   */
-  getSelectedModel() {
-    const model = getSetting(SETTINGS.SELECTED_MODEL);
-    return model || null;
-  }
-
-  /**
    * Send chat request (non-streaming)
    * @param {Object} options - Chat options
    * @returns {Promise<Object>}
    */
   async chat(options) {
-    const model = this.getSelectedModel();
     const response = await fetch(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: this.headers,
       body: JSON.stringify({
         ...options,
-        model: model || undefined,
         stream: false,
       }),
     });
@@ -135,8 +124,6 @@ export class BackendClient {
       return null;
     }
 
-    const model = this.getSelectedModel();
-
     // Track accumulated content for onComplete callback
     let fullContent = "";
     const allToolCalls = [];
@@ -164,11 +151,10 @@ export class BackendClient {
     // Get the last message content (the new user message)
     const lastMessage = messages[messages.length - 1];
 
-    // Send chat message via WebSocket
+    // Send chat message via WebSocket (backend uses configured model)
     globalThis.seneschalWS.startChat({
       conversationId: conversationId,
       message: lastMessage.content,
-      model: model || null,
       enabledTools: tools,
     });
 
@@ -247,16 +233,12 @@ export class BackendClient {
     if (metadata.tags) {
       formData.append("tags", metadata.tags);
     }
-    if (metadata.visionModel) {
-      formData.append("vision_model", metadata.visionModel);
-    }
 
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${this.baseUrl}/api/documents`);
 
       // Set a long timeout for PDF processing (5 minutes)
-      // Vision model captioning can take a while
       xhr.timeout = 300000;
 
       xhr.upload.addEventListener("progress", (event) => {
@@ -383,17 +365,12 @@ export class BackendClient {
   /**
    * Re-extract images from a document
    * @param {string} documentId
-   * @param {string} [visionModel] - Optional vision model for captioning
    * @returns {Promise<Object>} Extract result with count
    */
-  async reextractDocumentImages(documentId, visionModel = null) {
+  async reextractDocumentImages(documentId) {
     const response = await fetch(`${this.baseUrl}/api/documents/${documentId}/images/extract`, {
       method: "POST",
-      headers: {
-        ...this.headers,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ vision_model: visionModel }),
+      headers: this.headers,
     });
     if (!response.ok) {
       throw new Error(`Failed to re-extract document images: ${response.statusText}`);
@@ -489,6 +466,42 @@ export class BackendClient {
     });
     if (!response.ok) {
       throw new Error(`Failed to delete image: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  // ==================== Settings API ====================
+
+  /**
+   * Get all backend settings
+   * @returns {Promise<Object>} Settings response with settings map and overridden keys
+   */
+  async getSettings() {
+    const response = await fetch(`${this.baseUrl}/api/settings`, {
+      method: "GET",
+      headers: this.headers,
+    });
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      throw new Error(errorBody.message || `Failed to get settings: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  /**
+   * Update backend settings
+   * @param {Object} settings - Key-value pairs to update. Use null to delete/revert to default.
+   * @returns {Promise<Object>} Updated settings response
+   */
+  async updateSettings(settings) {
+    const response = await fetch(`${this.baseUrl}/api/settings`, {
+      method: "PUT",
+      headers: this.headers,
+      body: JSON.stringify({ settings }),
+    });
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      throw new Error(errorBody.message || `Failed to update settings: ${response.statusText}`);
     }
     return response.json();
   }
