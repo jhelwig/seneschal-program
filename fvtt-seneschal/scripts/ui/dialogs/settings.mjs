@@ -165,6 +165,16 @@ const SETTING_CATEGORIES = {
         max: 120,
         step: 5,
       },
+      "traveller_worlds.base_url": {
+        type: "text",
+        label: "SENESCHAL.Settings.Backend.Advanced.TravellerWorldsUrl",
+        hint: "SENESCHAL.Settings.Backend.Advanced.TravellerWorldsUrlHint",
+      },
+      "traveller_worlds.chrome_path": {
+        type: "text",
+        label: "SENESCHAL.Settings.Backend.Advanced.TravellerWorldsChromePath",
+        hint: "SENESCHAL.Settings.Backend.Advanced.TravellerWorldsChromePathHint",
+      },
     },
   },
 };

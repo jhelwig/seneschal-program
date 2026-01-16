@@ -105,5 +105,8 @@ bm25 = { workspace = true }
 # Lock-free atomic swap for hot reload
 arc-swap = { workspace = true }
 
+# Headless browser for web scraping (traveller worlds map generation)
+chromiumoxide = { workspace = true }
+
 [dev-dependencies]
 tokio-test = "0.4"

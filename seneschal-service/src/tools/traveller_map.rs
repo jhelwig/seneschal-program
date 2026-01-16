@@ -144,10 +144,17 @@ impl TravellerMapClient {
         Ok(results)
     }
 
-    /// Get world/credit data for a specific location
-    pub async fn credits(&self, sector: &str, hex: &str) -> Result<WorldData, TravellerMapError> {
+    /// Get complete world data for a specific location
+    ///
+    /// Uses the jumpworlds API with jump=0 to get full world data including
+    /// bases, stellar, worlds count, and other fields missing from the credits API.
+    pub async fn world_data(
+        &self,
+        sector: &str,
+        hex: &str,
+    ) -> Result<WorldData, TravellerMapError> {
         let url = format!(
-            "{}/api/credits?sector={}&hex={}",
+            "{}/api/jumpworlds?sector={}&hex={}&jump=0",
             self.base_url,
             urlencoding::encode(sector),
             urlencoding::encode(hex)
@@ -161,8 +168,14 @@ impl TravellerMapClient {
             });
         }
 
-        let data: WorldData = response.json().await?;
-        Ok(data)
+        let wrapper: JumpWorldsWorldDataResponse = response.json().await?;
+        wrapper
+            .worlds
+            .into_iter()
+            .next()
+            .ok_or_else(|| TravellerMapError::NotFound {
+                message: format!("No world found at {} {}", sector, hex),
+            })
     }
 
     /// Get coordinates for a location (sector/hex to world-space)
@@ -285,40 +298,6 @@ impl TravellerMapClient {
         }
 
         let results: MilieuxResult = response.json().await?;
-        Ok(results)
-    }
-
-    /// Get allegiance reference data
-    #[allow(dead_code)]
-    pub async fn allegiances(&self) -> Result<Vec<AllegianceCode>, TravellerMapError> {
-        let url = format!("{}/t5ss/allegiances", self.base_url);
-
-        let response = self.client.get(&url).send().await?;
-        if !response.status().is_success() {
-            return Err(TravellerMapError::ApiError {
-                status: response.status().as_u16(),
-                message: response.text().await.unwrap_or_default(),
-            });
-        }
-
-        let results: Vec<AllegianceCode> = response.json().await?;
-        Ok(results)
-    }
-
-    /// Get sophont reference data
-    #[allow(dead_code)]
-    pub async fn sophonts(&self) -> Result<Vec<SophontCode>, TravellerMapError> {
-        let url = format!("{}/t5ss/sophonts", self.base_url);
-
-        let response = self.client.get(&url).send().await?;
-        if !response.status().is_success() {
-            return Err(TravellerMapError::ApiError {
-                status: response.status().as_u16(),
-                message: response.text().await.unwrap_or_default(),
-            });
-        }
-
-        let results: Vec<SophontCode> = response.json().await?;
         Ok(results)
     }
 
@@ -464,9 +443,8 @@ pub enum TravellerMapError {
     #[error("No route found between {start} and {end}")]
     NoRouteFound { start: String, end: String },
 
-    #[error("Invalid location: {0}")]
-    #[allow(dead_code)]
-    InvalidLocation(String),
+    #[error("Not found: {message}")]
+    NotFound { message: String },
 }
 
 // Response types
@@ -575,6 +553,7 @@ pub struct WorldData {
     pub name: Option<String>,
     pub sector: Option<String>,
     pub hex: Option<String>,
+    #[serde(rename = "UWP")]
     pub uwp: Option<String>,
     pub allegiance: Option<String>,
     pub remarks: Option<String>,
@@ -583,13 +562,23 @@ pub struct WorldData {
     pub zone: Option<String>,
     pub bases: Option<String>,
     pub stellar: Option<String>,
+    #[serde(rename = "Ix")]
     pub importance: Option<String>,
+    #[serde(rename = "Ex")]
     pub economic: Option<String>,
+    #[serde(rename = "Cx")]
     pub cultural: Option<String>,
     pub nobility: Option<String>,
     pub worlds: Option<u32>,
     #[serde(rename = "ResourceUnits")]
     pub resource_units: Option<i64>,
+}
+
+/// Wrapper for the jumpworlds API response when fetching complete world data
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct JumpWorldsWorldDataResponse {
+    worlds: Vec<WorldData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -696,22 +685,6 @@ pub struct MilieuInfo {
     pub code: String,
     pub name: String,
     pub is_default: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-#[allow(dead_code)]
-pub struct AllegianceCode {
-    pub code: String,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-#[allow(dead_code)]
-pub struct SophontCode {
-    pub code: String,
-    pub name: String,
 }
 
 // Options for generating image URLs
@@ -879,7 +852,7 @@ impl TravellerMapTool {
 
             TravellerMapTool::WorldData { sector, hex } => {
                 let data = client
-                    .credits(sector, hex)
+                    .world_data(sector, hex)
                     .await
                     .map_err(|e| e.to_string())?;
                 serde_json::to_value(data).map_err(|e| e.to_string())

@@ -64,6 +64,14 @@ pub enum ToolName {
     TravellerMapSaveJumpMap,
 
     // ==========================================
+    // Traveller Worlds tools (Internal - headless browser)
+    // ==========================================
+    TravellerWorldsCanonUrl,
+    TravellerWorldsCanonSave,
+    TravellerWorldsCustomUrl,
+    TravellerWorldsCustomSave,
+
+    // ==========================================
     // System tools (External - requires FVTT)
     // ==========================================
     SystemSchema,

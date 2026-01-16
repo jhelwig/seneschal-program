@@ -120,6 +120,9 @@ pub struct DynamicConfig {
 
     #[serde(default = "default_traveller_map")]
     pub traveller_map: TravellerMapConfig,
+
+    #[serde(default = "default_traveller_worlds")]
+    pub traveller_worlds: TravellerWorldsConfig,
 }
 
 /// Ollama LLM configuration
@@ -280,6 +283,27 @@ impl Default for TravellerMapConfig {
     }
 }
 
+/// Traveller Worlds configuration (travellerworlds.com map generation)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TravellerWorldsConfig {
+    /// Base URL for Traveller Worlds
+    #[serde(default = "default_traveller_worlds_url")]
+    pub base_url: String,
+
+    /// Optional path to Chrome/Chromium executable (uses system default if not set)
+    #[serde(default)]
+    pub chrome_path: Option<String>,
+}
+
+impl Default for TravellerWorldsConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_traveller_worlds_url(),
+            chrome_path: None,
+        }
+    }
+}
+
 // ==================== DynamicConfig Settings Keys ====================
 
 /// All valid setting keys for DynamicConfig
@@ -307,6 +331,8 @@ pub const VALID_SETTING_KEYS: &[&str] = &[
     "image_extraction.text_overlap_min_dpi",
     "traveller_map.base_url",
     "traveller_map.timeout_secs",
+    "traveller_worlds.base_url",
+    "traveller_worlds.chrome_path",
 ];
 
 impl DynamicConfig {
@@ -425,6 +451,19 @@ impl DynamicConfig {
         map.insert(
             "traveller_map.timeout_secs".to_string(),
             serde_json::json!(self.traveller_map.timeout_secs),
+        );
+
+        // Traveller Worlds settings
+        map.insert(
+            "traveller_worlds.base_url".to_string(),
+            serde_json::Value::String(self.traveller_worlds.base_url.clone()),
+        );
+        map.insert(
+            "traveller_worlds.chrome_path".to_string(),
+            match &self.traveller_worlds.chrome_path {
+                Some(path) => serde_json::Value::String(path.clone()),
+                None => serde_json::Value::Null,
+            },
         );
 
         map
@@ -568,6 +607,20 @@ impl DynamicConfig {
             "traveller_map.timeout_secs" => {
                 if let Some(v) = value.as_u64() {
                     self.traveller_map.timeout_secs = v;
+                }
+            }
+
+            // Traveller Worlds settings
+            "traveller_worlds.base_url" => {
+                if let Some(v) = value.as_str() {
+                    self.traveller_worlds.base_url = v.to_string();
+                }
+            }
+            "traveller_worlds.chrome_path" => {
+                if value.is_null() {
+                    self.traveller_worlds.chrome_path = None;
+                } else if let Some(v) = value.as_str() {
+                    self.traveller_worlds.chrome_path = Some(v.to_string());
                 }
             }
 
@@ -859,4 +912,12 @@ fn default_traveller_map_url() -> String {
 
 fn default_traveller_map_timeout() -> u64 {
     30
+}
+
+fn default_traveller_worlds() -> TravellerWorldsConfig {
+    TravellerWorldsConfig::default()
+}
+
+fn default_traveller_worlds_url() -> String {
+    "http://www.travellerworlds.com".to_string()
 }

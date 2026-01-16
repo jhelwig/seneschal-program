@@ -106,3 +106,6 @@ bm25 = "2.3"
 
 # Lock-free atomic swap for hot reload
 arc-swap = "1.7"
+
+# Headless browser for web scraping (traveller worlds map generation)
+chromiumoxide = { version = "0.8", features = ["tokio-runtime"] }

@@ -15,6 +15,7 @@ pub mod registry;
 pub mod tool_defs;
 pub mod traveller;
 pub mod traveller_map;
+pub mod traveller_worlds;
 
 pub use definitions::{
     OllamaFunctionDefinition, OllamaToolDefinition, get_ollama_tool_definitions,
@@ -22,6 +23,7 @@ pub use definitions::{
 pub use registry::REGISTRY;
 pub use traveller::TravellerTool;
 pub use traveller_map::{TravellerMapClient, TravellerMapTool};
+pub use traveller_worlds::{CustomWorldParams, TravellerWorldsClient};
 
 /// Access levels aligned with FVTT user roles
 /// Values correspond to minimum required role to access

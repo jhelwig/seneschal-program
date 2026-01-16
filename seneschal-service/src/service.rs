@@ -25,8 +25,8 @@ use crate::ollama::{
 };
 use crate::search::{SearchResult, SearchService, format_search_results_for_llm};
 use crate::tools::{
-    AccessLevel, SearchFilters, TagMatch, ToolCall, ToolLocation, ToolResult, TravellerMapClient,
-    TravellerMapTool, TravellerTool, classify_tool,
+    AccessLevel, CustomWorldParams, SearchFilters, TagMatch, ToolCall, ToolLocation, ToolResult,
+    TravellerMapClient, TravellerMapTool, TravellerTool, TravellerWorldsClient, classify_tool,
 };
 use crate::websocket::{DocumentProgressUpdate, ServerMessage, WebSocketManager};
 
@@ -54,6 +54,8 @@ pub struct SeneschalService {
     pub ws_manager: Arc<WebSocketManager>,
     /// Client for Traveller Map API
     pub traveller_map_client: TravellerMapClient,
+    /// Client for Traveller Worlds (travellerworlds.com) map generation
+    pub traveller_worlds_client: TravellerWorldsClient,
     /// Senders for tool results, keyed by conversation_id
     tool_result_senders: Arc<DashMap<String, oneshot::Sender<serde_json::Value>>>,
     /// Senders for continue signals, keyed by conversation_id
@@ -112,6 +114,17 @@ impl SeneschalService {
             "Traveller Map API client initialized"
         );
 
+        // Initialize Traveller Worlds client
+        let traveller_worlds_client = TravellerWorldsClient::new(
+            &dynamic.traveller_worlds.base_url,
+            dynamic.traveller_worlds.chrome_path.clone(),
+        );
+        info!(
+            base_url = %dynamic.traveller_worlds.base_url,
+            chrome_path = ?dynamic.traveller_worlds.chrome_path,
+            "Traveller Worlds client initialized"
+        );
+
         Ok(Self {
             runtime_config,
             db,
@@ -122,6 +135,7 @@ impl SeneschalService {
             active_requests: Arc::new(DashMap::new()),
             ws_manager,
             traveller_map_client,
+            traveller_worlds_client,
             tool_result_senders: Arc::new(DashMap::new()),
             continue_senders: Arc::new(DashMap::new()),
             mcp_tool_result_senders: Arc::new(DashMap::new()),
@@ -1726,6 +1740,337 @@ impl SeneschalService {
                                 "size_bytes": bytes.len(),
                                 "base64_data": base64_data,
                                 "message": "Direct delivery not available. Use the FVTT module to save this image."
+                            }),
+                        )
+                    }
+                }
+            }
+            // Traveller Worlds tools (headless browser map generation)
+            "traveller_worlds_canon_url" => {
+                let sector = call
+                    .args
+                    .get("sector")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let hex = call.args.get("hex").and_then(|v| v.as_str()).unwrap_or("");
+
+                // Fetch world data from Traveller Map API
+                let tool = TravellerMapTool::WorldData {
+                    sector: sector.to_string(),
+                    hex: hex.to_string(),
+                };
+                match tool.execute(&self.traveller_map_client).await {
+                    Ok(result) => {
+                        // Parse world data and build URL
+                        match serde_json::from_value::<crate::tools::traveller_map::WorldData>(
+                            result,
+                        ) {
+                            Ok(world_data) => {
+                                let url = self
+                                    .traveller_worlds_client
+                                    .build_url_from_world_data(&world_data);
+                                ToolResult::success(
+                                    call.id.clone(),
+                                    serde_json::json!({
+                                        "url": url,
+                                        "world_name": world_data.name.unwrap_or_default(),
+                                        "sector": world_data.sector.unwrap_or_default(),
+                                        "hex": world_data.hex.unwrap_or_default()
+                                    }),
+                                )
+                            }
+                            Err(e) => ToolResult::error(
+                                call.id.clone(),
+                                format!("Failed to parse world data: {}", e),
+                            ),
+                        }
+                    }
+                    Err(e) => ToolResult::error(call.id.clone(), e),
+                }
+            }
+            "traveller_worlds_canon_save" => {
+                let sector = call
+                    .args
+                    .get("sector")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let hex = call.args.get("hex").and_then(|v| v.as_str()).unwrap_or("");
+                let target_folder = call.args.get("target_folder").and_then(|v| v.as_str());
+
+                // Fetch world data from Traveller Map API
+                let tool = TravellerMapTool::WorldData {
+                    sector: sector.to_string(),
+                    hex: hex.to_string(),
+                };
+                let world_data = match tool.execute(&self.traveller_map_client).await {
+                    Ok(result) => {
+                        match serde_json::from_value::<crate::tools::traveller_map::WorldData>(
+                            result,
+                        ) {
+                            Ok(wd) => wd,
+                            Err(e) => {
+                                return ToolResult::error(
+                                    call.id.clone(),
+                                    format!("Failed to parse world data: {}", e),
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => return ToolResult::error(call.id.clone(), e),
+                };
+
+                // Build URL and extract SVG
+                let url = self
+                    .traveller_worlds_client
+                    .build_url_from_world_data(&world_data);
+                let svg = match self.traveller_worlds_client.extract_svg(&url).await {
+                    Ok(s) => s,
+                    Err(e) => return ToolResult::error(call.id.clone(), e.to_string()),
+                };
+
+                // Generate filename
+                let world_name = world_data
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| "world".to_string());
+                let filename = format!("{}.svg", sanitize_map_filename(&world_name));
+                let folder = target_folder.unwrap_or("traveller-worlds");
+                let relative_path = format!("{}/{}", folder, filename);
+                let fvtt_path = format!("assets/{}", relative_path);
+
+                // Save to FVTT assets
+                match self.runtime_config.static_config.fvtt.check_assets_access() {
+                    AssetsAccess::Direct(assets_dir) => {
+                        let full_path = assets_dir.join(&relative_path);
+                        if let Some(parent) = full_path.parent()
+                            && let Err(e) = std::fs::create_dir_all(parent)
+                        {
+                            return ToolResult::error(
+                                call.id.clone(),
+                                format!("Failed to create directory: {}", e),
+                            );
+                        }
+
+                        if let Err(e) = std::fs::write(&full_path, &svg) {
+                            return ToolResult::error(
+                                call.id.clone(),
+                                format!("Failed to write SVG: {}", e),
+                            );
+                        }
+
+                        ToolResult::success(
+                            call.id.clone(),
+                            serde_json::json!({
+                                "success": true,
+                                "mode": "direct",
+                                "fvtt_path": fvtt_path,
+                                "filename": filename,
+                                "size_bytes": svg.len(),
+                                "world_name": world_name,
+                                "message": format!("World map saved to FVTT assets at {}", fvtt_path)
+                            }),
+                        )
+                    }
+                    AssetsAccess::Shuttle => {
+                        let base64_data = base64::engine::general_purpose::STANDARD.encode(&svg);
+                        ToolResult::success(
+                            call.id.clone(),
+                            serde_json::json!({
+                                "success": false,
+                                "mode": "shuttle",
+                                "suggested_path": fvtt_path,
+                                "filename": filename,
+                                "extension": "svg",
+                                "size_bytes": svg.len(),
+                                "world_name": world_name,
+                                "base64_data": base64_data,
+                                "message": "Direct delivery not available. Use the FVTT module to save this SVG."
+                            }),
+                        )
+                    }
+                }
+            }
+            "traveller_worlds_custom_url" => {
+                let params = CustomWorldParams {
+                    name: call
+                        .args
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    uwp: call
+                        .args
+                        .get("uwp")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    hex: call
+                        .args
+                        .get("hex")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    sector: call
+                        .args
+                        .get("sector")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    seed: call
+                        .args
+                        .get("seed")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    stellar: call
+                        .args
+                        .get("stellar")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    bases: call
+                        .args
+                        .get("bases")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    tc: call.args.get("tc").and_then(|v| v.as_array()).map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    }),
+                    travel_zone: call
+                        .args
+                        .get("travel_zone")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    pbg: call
+                        .args
+                        .get("pbg")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                };
+
+                let url = self.traveller_worlds_client.build_url_from_params(&params);
+                ToolResult::success(
+                    call.id.clone(),
+                    serde_json::json!({
+                        "url": url,
+                        "world_name": params.name
+                    }),
+                )
+            }
+            "traveller_worlds_custom_save" => {
+                let params = CustomWorldParams {
+                    name: call
+                        .args
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    uwp: call
+                        .args
+                        .get("uwp")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    hex: call
+                        .args
+                        .get("hex")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    sector: call
+                        .args
+                        .get("sector")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    seed: call
+                        .args
+                        .get("seed")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    stellar: call
+                        .args
+                        .get("stellar")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    bases: call
+                        .args
+                        .get("bases")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    tc: call.args.get("tc").and_then(|v| v.as_array()).map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    }),
+                    travel_zone: call
+                        .args
+                        .get("travel_zone")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    pbg: call
+                        .args
+                        .get("pbg")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                };
+                let target_folder = call.args.get("target_folder").and_then(|v| v.as_str());
+
+                let url = self.traveller_worlds_client.build_url_from_params(&params);
+                let svg = match self.traveller_worlds_client.extract_svg(&url).await {
+                    Ok(s) => s,
+                    Err(e) => return ToolResult::error(call.id.clone(), e.to_string()),
+                };
+
+                // Generate filename
+                let filename = format!("{}.svg", sanitize_map_filename(&params.name));
+                let folder = target_folder.unwrap_or("traveller-worlds");
+                let relative_path = format!("{}/{}", folder, filename);
+                let fvtt_path = format!("assets/{}", relative_path);
+
+                // Save to FVTT assets
+                match self.runtime_config.static_config.fvtt.check_assets_access() {
+                    AssetsAccess::Direct(assets_dir) => {
+                        let full_path = assets_dir.join(&relative_path);
+                        if let Some(parent) = full_path.parent()
+                            && let Err(e) = std::fs::create_dir_all(parent)
+                        {
+                            return ToolResult::error(
+                                call.id.clone(),
+                                format!("Failed to create directory: {}", e),
+                            );
+                        }
+
+                        if let Err(e) = std::fs::write(&full_path, &svg) {
+                            return ToolResult::error(
+                                call.id.clone(),
+                                format!("Failed to write SVG: {}", e),
+                            );
+                        }
+
+                        ToolResult::success(
+                            call.id.clone(),
+                            serde_json::json!({
+                                "success": true,
+                                "mode": "direct",
+                                "fvtt_path": fvtt_path,
+                                "filename": filename,
+                                "size_bytes": svg.len(),
+                                "world_name": params.name,
+                                "message": format!("World map saved to FVTT assets at {}", fvtt_path)
+                            }),
+                        )
+                    }
+                    AssetsAccess::Shuttle => {
+                        let base64_data = base64::engine::general_purpose::STANDARD.encode(&svg);
+                        ToolResult::success(
+                            call.id.clone(),
+                            serde_json::json!({
+                                "success": false,
+                                "mode": "shuttle",
+                                "suggested_path": fvtt_path,
+                                "filename": filename,
+                                "extension": "svg",
+                                "size_bytes": svg.len(),
+                                "world_name": params.name,
+                                "base64_data": base64_data,
+                                "message": "Direct delivery not available. Use the FVTT module to save this SVG."
                             }),
                         )
                     }
@@ -3398,6 +3743,7 @@ impl SeneschalService {
             active_requests: self.active_requests.clone(),
             ws_manager: self.ws_manager.clone(),
             traveller_map_client: self.traveller_map_client.clone(),
+            traveller_worlds_client: self.traveller_worlds_client.clone(),
             tool_result_senders: self.tool_result_senders.clone(),
             continue_senders: self.continue_senders.clone(),
             mcp_tool_result_senders: self.mcp_tool_result_senders.clone(),

@@ -10,6 +10,7 @@ mod image;
 mod mcp;
 mod traveller;
 mod traveller_map;
+mod traveller_worlds;
 
 use std::collections::HashMap;
 
@@ -21,6 +22,7 @@ pub fn register_all_tools(registry: &mut HashMap<ToolName, ToolMetadata>) {
     image::register(registry);
     traveller::register(registry);
     traveller_map::register(registry);
+    traveller_worlds::register(registry);
     fvtt_system::register(registry);
     fvtt_crud::register(registry);
     mcp::register(registry);

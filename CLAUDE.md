@@ -173,6 +173,12 @@ SENESCHAL_EMBEDDINGS__MODEL=qwen3-embedding:8b
 - **Database**: SQLite with vector embeddings as BLOB
 - **PDF processing**: `pdfium-render` for text + `poppler-rs` for image layer compositing
 
+## Dead Code Policy
+
+`#[allow(dead_code)]` is not allowed. Code must either be used or removed.
+
+Same with unused variables: use them or remove them. Do not prefix with `_` to silence warnings, unless an external API limits flexibility (e.g., a trait method signature you cannot change).
+
 ## Module Organization
 
 ### When to Split a Module

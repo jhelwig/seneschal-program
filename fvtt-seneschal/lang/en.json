@@ -109,7 +109,11 @@
           "TravellerMapUrl": "Traveller Map URL",
           "TravellerMapUrlHint": "Base URL for the Traveller Map API",
           "TravellerMapTimeout": "Traveller Map Timeout (seconds)",
-          "TravellerMapTimeoutHint": "Request timeout for Traveller Map API calls"
+          "TravellerMapTimeoutHint": "Request timeout for Traveller Map API calls",
+          "TravellerWorldsUrl": "Traveller Worlds URL",
+          "TravellerWorldsUrlHint": "Base URL for the Traveller Worlds map generation service",
+          "TravellerWorldsChromePath": "Chrome Path",
+          "TravellerWorldsChromePathHint": "Path to Chrome/Chromium executable for headless browser automation (leave empty to use system default)"
         }
       },
       "EnablePlayerAccess": "Allow Players to Use Seneschal Program",
