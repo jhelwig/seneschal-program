@@ -6,6 +6,7 @@
 
 pub mod assets;
 pub mod epub;
+pub mod hash;
 pub mod markdown;
 pub mod pdf;
 

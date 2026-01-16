@@ -40,6 +40,11 @@ pub struct ServerConfig {
 pub struct StorageConfig {
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,
+
+    /// Optional auto-import directory. When set, files placed here are automatically
+    /// imported. Files are moved to processed/ or failed/ subdirectories after import.
+    #[serde(default)]
+    pub auto_import_dir: Option<PathBuf>,
 }
 
 /// FVTT integration configuration
@@ -746,6 +751,7 @@ fn default_chunk_overlap() -> usize {
 fn default_storage() -> StorageConfig {
     StorageConfig {
         data_dir: default_data_dir(),
+        auto_import_dir: None,
     }
 }
 

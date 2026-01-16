@@ -578,6 +578,63 @@ impl Database {
         Ok(rows > 0)
     }
 
+    /// Check if a document with the given file_hash already exists.
+    /// Returns the document ID if found.
+    pub fn get_document_by_hash(&self, file_hash: &str) -> ServiceResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.query_row(
+            "SELECT id FROM documents WHERE file_hash = ?1 AND processing_status != 'failed'",
+            params![file_hash],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(DatabaseError::Query)
+        .map_err(Into::into)
+    }
+
+    /// Update a document's file_hash.
+    pub fn update_document_hash(&self, document_id: &str, file_hash: &str) -> ServiceResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let rows = conn
+            .execute(
+                "UPDATE documents SET file_hash = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![file_hash, document_id],
+            )
+            .map_err(DatabaseError::Query)?;
+
+        Ok(rows > 0)
+    }
+
+    /// Get all documents without a file_hash (for backfill migration).
+    /// Only returns documents with a file_path set (so we can compute the hash).
+    pub fn get_documents_without_hash(&self) -> ServiceResult<Vec<Document>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT d.id, d.title, d.file_path, d.file_hash, d.access_level, d.metadata, d.created_at, d.updated_at, d.processing_status, d.processing_error, \
+                 (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as chunk_count, \
+                 (SELECT COUNT(*) FROM document_images WHERE document_id = d.id) as image_count, \
+                 d.processing_phase, d.processing_progress, d.processing_total, \
+                 d.captioning_status, d.captioning_error, d.captioning_progress, d.captioning_total \
+                 FROM documents d WHERE d.file_hash IS NULL AND d.file_path IS NOT NULL ORDER BY d.created_at"
+            )
+            .map_err(DatabaseError::Query)?;
+
+        let rows = stmt
+            .query_map([], |row| Document::from_row(row, vec![]))
+            .map_err(DatabaseError::Query)?;
+
+        let mut docs = Vec::new();
+        for row in rows {
+            docs.push(row.map_err(DatabaseError::Query)?);
+        }
+
+        Ok(docs)
+    }
+
     /// List all documents with optional access level filter
     pub fn list_documents(&self, max_access_level: Option<u8>) -> ServiceResult<Vec<Document>> {
         let conn = self.conn.lock().unwrap();

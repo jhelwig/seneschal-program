@@ -18,7 +18,7 @@ use crate::db::{
 };
 use crate::error::{ServiceError, ServiceResult, format_error_chain_ref};
 use crate::i18n::I18n;
-use crate::ingestion::IngestionService;
+use crate::ingestion::{hash::compute_content_hash, IngestionService};
 use crate::ollama::{
     ChatMessage, ChatRequest, OllamaClient, OllamaFunctionCall, OllamaToolCall, StreamEvent,
 };
@@ -2100,6 +2100,9 @@ impl SeneschalService {
             ));
         }
 
+        // Compute content hash for duplicate detection
+        let file_hash = compute_content_hash(content);
+
         // Generate document ID
         let doc_id = uuid::Uuid::new_v4().to_string();
 
@@ -2126,7 +2129,7 @@ impl SeneschalService {
             id: doc_id.clone(),
             title: title.to_string(),
             file_path: Some(permanent_path.to_string_lossy().to_string()),
-            file_hash: None,
+            file_hash: Some(file_hash),
             access_level,
             tags: tags.clone(),
             metadata,
@@ -2155,6 +2158,66 @@ impl SeneschalService {
         );
 
         Ok(document)
+    }
+
+    /// Backfill file_hash for existing documents that don't have one.
+    ///
+    /// This runs once on startup to populate hashes for documents uploaded
+    /// before hash computation was added. Enables duplicate detection for
+    /// auto-import functionality.
+    pub async fn backfill_document_hashes(&self) -> ServiceResult<usize> {
+        use crate::ingestion::hash::compute_file_hash;
+        use std::path::Path;
+
+        let docs = self.db.get_documents_without_hash()?;
+        if docs.is_empty() {
+            return Ok(0);
+        }
+
+        info!(count = docs.len(), "Backfilling document hashes");
+
+        let mut backfilled = 0;
+        for doc in docs {
+            let Some(ref file_path) = doc.file_path else {
+                // Shouldn't happen due to the query, but skip if no path
+                continue;
+            };
+
+            let path = Path::new(file_path);
+            if !path.exists() {
+                warn!(
+                    doc_id = %doc.id,
+                    file_path = %file_path,
+                    "Document file not found, skipping hash backfill"
+                );
+                continue;
+            }
+
+            match compute_file_hash(path) {
+                Ok(hash) => {
+                    if let Err(e) = self.db.update_document_hash(&doc.id, &hash) {
+                        warn!(
+                            doc_id = %doc.id,
+                            error = %e,
+                            "Failed to update document hash"
+                        );
+                    } else {
+                        debug!(doc_id = %doc.id, hash = %hash, "Backfilled document hash");
+                        backfilled += 1;
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        doc_id = %doc.id,
+                        file_path = %file_path,
+                        error = %e,
+                        "Failed to compute hash for document"
+                    );
+                }
+            }
+        }
+
+        Ok(backfilled)
     }
 
     /// Start the document processing worker

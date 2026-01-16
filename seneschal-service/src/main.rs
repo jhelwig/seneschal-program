@@ -4,6 +4,7 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 mod api;
+mod auto_import;
 mod config;
 mod db;
 mod error;
@@ -66,6 +67,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize the service
     let service = Arc::new(SeneschalService::new(db, runtime_config.clone()).await?);
 
+    // Backfill document hashes for existing documents (one-time migration)
+    match service.backfill_document_hashes().await {
+        Ok(count) if count > 0 => info!(count, "Backfilled document hashes"),
+        Err(e) => tracing::warn!(error = %e, "Document hash backfill failed"),
+        _ => {}
+    }
+
     // Build the router
     let mut app = api::router(service.clone(), &runtime_config);
 
@@ -82,6 +90,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start image captioning worker (runs in parallel, separate from document processing)
     SeneschalService::start_captioning_worker(service.clone());
+
+    // Start auto-import worker if configured
+    if let Some(auto_import_dir) = &runtime_config.static_config.storage.auto_import_dir {
+        auto_import::start_auto_import_worker(service.clone(), auto_import_dir.clone());
+    }
 
     // Start conversation cleanup background task
     let cleanup_service = service.clone();
