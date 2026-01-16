@@ -10,6 +10,7 @@ use crate::tools::{
     SearchFilters, TagMatch, ToolLocation, TravellerMapTool, TravellerTool, classify_tool,
 };
 
+use super::tool_search::TOOL_SEARCH_INDEX;
 use super::{McpError, McpState};
 
 /// Handle tools/call request
@@ -92,6 +93,7 @@ async fn execute_internal_tool(
         "traveller_map_save_jump_map" => {
             execute_traveller_map_save_jump_map(state, arguments).await
         }
+        "tool_search" => execute_tool_search(arguments),
         _ => Err(McpError {
             code: -32601,
             message: format!("Unknown internal tool: {}", name),
@@ -1472,4 +1474,46 @@ fn sanitize_filename(s: &str) -> String {
         })
         .collect::<String>()
         .to_lowercase()
+}
+
+// ==========================================
+// MCP Tool Search Implementation
+// ==========================================
+
+/// Execute tool_search - search for tools using natural language.
+///
+/// Returns tool_reference blocks per the Claude tool search tool specification.
+fn execute_tool_search(arguments: &serde_json::Value) -> Result<serde_json::Value, McpError> {
+    let query = arguments
+        .get("query")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let limit = arguments
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5)
+        .min(10) as usize;
+
+    if query.is_empty() {
+        return Err(McpError {
+            code: -32602,
+            message: "Query parameter is required".to_string(),
+        });
+    }
+
+    let results = TOOL_SEARCH_INDEX.search(query, limit);
+
+    // Return tool_reference blocks per Claude docs
+    let tool_references: Vec<serde_json::Value> = results
+        .into_iter()
+        .map(|tool_name| {
+            serde_json::json!({
+                "type": "tool_reference",
+                "tool_name": tool_name
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({ "content": tool_references }))
 }

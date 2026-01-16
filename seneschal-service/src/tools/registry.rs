@@ -167,6 +167,11 @@ pub enum ToolName {
     SearchCompendiumPacks,
     ImportFromCompendium,
     ExportToCompendium,
+
+    // ==========================================
+    // MCP-specific Tools (Internal)
+    // ==========================================
+    ToolSearch,
 }
 
 /// Metadata for a tool definition.
@@ -192,6 +197,16 @@ pub struct ToolMetadata {
 
     /// Optional suffix for MCP description (e.g., "Requires GM WebSocket connection")
     pub mcp_suffix: Option<&'static str>,
+
+    /// Tool category for organizational purposes (e.g., "document", "fvtt_crud", "traveller")
+    pub category: &'static str,
+
+    /// Priority for deferred loading (lower = more important)
+    /// 0 = always load immediately (tool_search itself)
+    /// 1 = high priority (document_search, list_actors, dice_roll)
+    /// 2 = normal priority (most tools)
+    /// 3 = low priority (specialized tools like traveller_map_*)
+    pub priority: u8,
 
     /// JSON Schema for tool parameters (called lazily to avoid static initialization issues)
     pub parameters: fn() -> serde_json::Value,
@@ -250,10 +265,14 @@ impl ToolRegistry {
                     Some(suffix) => format!("{} {}", t.description, suffix),
                     None => t.description.to_string(),
                 };
+                // Priority 0-1 tools should not be deferred
+                let defer_loading = Some(t.priority > 1);
                 McpToolDefinition {
                     name: t.name.to_string(),
                     description,
                     input_schema: (t.parameters)(),
+                    defer_loading,
+                    category: Some(t.category.to_string()),
                 }
             })
             .collect()
@@ -329,6 +348,12 @@ pub struct McpToolDefinition {
     pub description: String,
     #[serde(rename = "inputSchema")]
     pub input_schema: serde_json::Value,
+    /// Hint for clients about whether to defer loading this tool
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defer_loading: Option<bool>,
+    /// Tool category for organizational purposes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ mod document;
 mod fvtt_crud;
 mod fvtt_system;
 mod image;
+mod mcp;
 mod traveller;
 mod traveller_map;
 
@@ -22,4 +23,5 @@ pub fn register_all_tools(registry: &mut HashMap<ToolName, ToolMetadata>) {
     traveller_map::register(registry);
     fvtt_system::register(registry);
     fvtt_crud::register(registry);
+    mcp::register(registry);
 }

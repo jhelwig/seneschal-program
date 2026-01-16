@@ -29,6 +29,8 @@ fn document_search() -> ToolMetadata {
         mcp_enabled: true,
         description: "Search game documents (rulebooks, scenarios) for information using semantic similarity. Good for conceptual queries like 'how do jump drives work' or 'rules for combat'. Returns relevant text chunks.",
         mcp_suffix: None,
+        category: "document",
+        priority: 1, // High priority - core RAG functionality
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -61,6 +63,8 @@ fn document_search_text() -> ToolMetadata {
         mcp_enabled: true,
         description: "Search documents using exact keyword matching. Use this for specific names, terms, or when semantic search doesn't find what you need. Supports filtering by section (e.g., 'Adventure 1'). Good for finding specific characters like 'Anders Casarii' or references within a particular section.",
         mcp_suffix: None,
+        category: "document",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -96,6 +100,8 @@ fn document_get() -> ToolMetadata {
         mcp_enabled: true,
         description: "Get document metadata or retrieve the full text content of a specific page. Use 'page' parameter to read page content - this is the primary way to read specific pages from rulebooks and scenarios.",
         mcp_suffix: None,
+        category: "document",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -123,6 +129,8 @@ fn document_list() -> ToolMetadata {
         mcp_enabled: true,
         description: "List all available documents (rulebooks, scenarios) with their IDs and titles.",
         mcp_suffix: None,
+        category: "document",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -146,6 +154,8 @@ fn document_find() -> ToolMetadata {
         mcp_enabled: true,
         description: "Find documents by title (case-insensitive partial match). Returns document IDs and metadata.",
         mcp_suffix: None,
+        category: "document",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -169,6 +179,8 @@ fn document_update() -> ToolMetadata {
         mcp_enabled: true,
         description: "Update document metadata (title, access level, and/or tags). Use document_list or document_find to get document IDs first. Tags are replaced entirely - provide all desired tags.",
         mcp_suffix: None,
+        category: "document",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",

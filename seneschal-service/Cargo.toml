@@ -99,6 +99,9 @@ urlencoding = { workspace = true }
 # Enum utilities (for tool registry)
 strum = { workspace = true }
 
+# BM25 search engine (for MCP tool search)
+bm25 = { workspace = true }
+
 # Lock-free atomic swap for hot reload
 arc-swap = { workspace = true }
 

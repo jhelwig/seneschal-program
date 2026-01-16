@@ -26,6 +26,8 @@ fn traveller_uwp_parse() -> ToolMetadata {
         mcp_enabled: true,
         description: "Parse a Traveller UWP (Universal World Profile) string into detailed world data.",
         mcp_suffix: None,
+        category: "traveller",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -49,6 +51,8 @@ fn traveller_jump_calc() -> ToolMetadata {
         mcp_enabled: true,
         description: "Calculate jump drive fuel requirements and time.",
         mcp_suffix: None,
+        category: "traveller",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -80,6 +84,8 @@ fn traveller_skill_lookup() -> ToolMetadata {
         mcp_enabled: true,
         description: "Look up a Traveller skill's description, characteristic, and specialities.",
         mcp_suffix: None,
+        category: "traveller",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",

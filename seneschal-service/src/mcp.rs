@@ -25,6 +25,7 @@ use uuid::Uuid;
 use crate::service::SeneschalService;
 
 pub mod handlers;
+pub mod tool_search;
 pub mod tools;
 
 use handlers::{handle_initialize, handle_tools_list};
@@ -293,4 +294,10 @@ pub(crate) struct McpToolDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
+    /// Hint for clients about whether to defer loading this tool
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defer_loading: Option<bool>,
+    /// Tool category for organizational purposes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
 }

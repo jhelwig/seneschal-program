@@ -101,5 +101,8 @@ urlencoding = "2.1"
 # Enum utilities (for tool registry)
 strum = { version = "0.26", features = ["derive"] }
 
+# BM25 search engine (for MCP tool search)
+bm25 = "2.3"
+
 # Lock-free atomic swap for hot reload
 arc-swap = "1.7"

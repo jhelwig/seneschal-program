@@ -22,6 +22,8 @@ fn image_list() -> ToolMetadata {
         mcp_enabled: true,
         description: "List images from a document. Use document_find first to get the document ID, then use this to browse images from specific pages or page ranges.",
         mcp_suffix: None,
+        category: "image",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -57,6 +59,8 @@ fn image_search() -> ToolMetadata {
         mcp_enabled: true,
         description: "Search for images by description using semantic similarity. Good for finding maps, portraits, deck plans, etc.",
         mcp_suffix: None,
+        category: "image",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -88,6 +92,8 @@ fn image_get() -> ToolMetadata {
         mcp_enabled: true,
         description: "Get detailed information about a specific image by its ID.",
         mcp_suffix: None,
+        category: "image",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -111,6 +117,8 @@ fn image_deliver() -> ToolMetadata {
         mcp_enabled: true,
         description: "Copy an image to the Foundry VTT assets directory so it can be used in scenes, actors, etc. Returns the full FVTT path (starting with 'assets/') to use in documents.",
         mcp_suffix: None,
+        category: "image",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",

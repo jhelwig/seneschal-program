@@ -54,6 +54,8 @@ fn create_scene() -> ToolMetadata {
         mcp_enabled: true,
         description: "Create a Foundry VTT scene with a background image. Use image_deliver first to get the image path. Can create in world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -101,6 +103,8 @@ fn get_scene() -> ToolMetadata {
         mcp_enabled: true,
         description: "Get a Foundry VTT scene by ID. Returns the scene's configuration. Can read from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -128,6 +132,8 @@ fn update_scene() -> ToolMetadata {
         mcp_enabled: true,
         description: "Update an existing Foundry VTT scene. Can modify name, background, dimensions, grid settings, etc. Works with world or compendium (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -183,6 +189,8 @@ fn delete_scene() -> ToolMetadata {
         mcp_enabled: true,
         description: "Delete a Foundry VTT scene permanently. Works with world or compendium (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -210,6 +218,8 @@ fn list_scenes() -> ToolMetadata {
         mcp_enabled: true,
         description: "List scenes in Foundry VTT. Can filter by name pattern. Lists from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -265,6 +275,8 @@ fn create_actor() -> ToolMetadata {
         mcp_enabled: true,
         description: "Create a Foundry VTT actor (character, NPC, creature, vehicle, etc.). Use system_schema first to understand the actor types and data structure. Can create in world or compendium. Biography/notes fields support cross-document links: @UUID[Type.ID]{Label}.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -308,6 +320,8 @@ fn get_actor() -> ToolMetadata {
         mcp_enabled: true,
         description: "Get a Foundry VTT actor by ID. Returns the actor's complete data. Can read from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -335,6 +349,8 @@ fn update_actor() -> ToolMetadata {
         mcp_enabled: true,
         description: "Update an existing Foundry VTT actor. Can modify name, image, stats, or any system data. Works with world or compendium (if unlocked). Biography/notes fields support cross-document links: @UUID[Type.ID]{Label}.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -378,6 +394,8 @@ fn delete_actor() -> ToolMetadata {
         mcp_enabled: true,
         description: "Delete a Foundry VTT actor permanently. Works with world or compendium (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -405,6 +423,8 @@ fn list_actors() -> ToolMetadata {
         mcp_enabled: true,
         description: "List actors in Foundry VTT. Can filter by name pattern. Lists from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 1, // High priority - most common FVTT query
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -460,6 +480,8 @@ fn add_actor_item() -> ToolMetadata {
         mcp_enabled: true,
         description: "Add an embedded item to a Foundry VTT actor. Use this to add equipment, skills, abilities, or other items to characters, NPCs, or other actors. Works with world or compendium actors (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -503,6 +525,8 @@ fn get_actor_item() -> ToolMetadata {
         mcp_enabled: true,
         description: "Get a specific embedded item from a Foundry VTT actor by item ID. Returns the item's complete data.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -534,6 +558,8 @@ fn update_actor_item() -> ToolMetadata {
         mcp_enabled: true,
         description: "Update an embedded item on a Foundry VTT actor. Can modify name, image, or any system data. Works with world or compendium actors (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -577,6 +603,8 @@ fn delete_actor_item() -> ToolMetadata {
         mcp_enabled: true,
         description: "Delete an embedded item from a Foundry VTT actor. Works with world or compendium actors (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -608,6 +636,8 @@ fn list_actor_items() -> ToolMetadata {
         mcp_enabled: true,
         description: "List all embedded items on a Foundry VTT actor. Can filter by item type or name. Returns item IDs, names, types, and images.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -660,6 +690,8 @@ fn create_item() -> ToolMetadata {
         mcp_enabled: true,
         description: "Create a Foundry VTT item (weapon, armor, equipment, skill, spell, etc.). Use system_schema first to understand item types. Can create in world or compendium. Description fields support cross-document links: @UUID[Type.ID]{Label}.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -703,6 +735,8 @@ fn get_item() -> ToolMetadata {
         mcp_enabled: true,
         description: "Get a Foundry VTT item by ID. Returns the item's complete data. Can read from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -730,6 +764,8 @@ fn update_item() -> ToolMetadata {
         mcp_enabled: true,
         description: "Update an existing Foundry VTT item. Can modify name, image, or any system data. Works with world or compendium (if unlocked). Description fields support cross-document links: @UUID[Type.ID]{Label}.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -773,6 +809,8 @@ fn delete_item() -> ToolMetadata {
         mcp_enabled: true,
         description: "Delete a Foundry VTT item permanently. Works with world or compendium (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -800,6 +838,8 @@ fn list_items() -> ToolMetadata {
         mcp_enabled: true,
         description: "List items in Foundry VTT. Can filter by name pattern or item type. Lists from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 1, // High priority - second most common FVTT query
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -855,6 +895,8 @@ fn create_journal() -> ToolMetadata {
         mcp_enabled: true,
         description: "Create a Foundry VTT journal for notes, handouts, or lore. Journals can have multiple pages with text or images. Can create in world or compendium. Rich text supports cross-document links: @UUID[Type.ID]{Label} (e.g., @UUID[Actor.abc123]{Guard Captain}). Types: Actor, Item, JournalEntry, Scene, RollTable.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -901,6 +943,8 @@ fn get_journal() -> ToolMetadata {
         mcp_enabled: true,
         description: "Get a Foundry VTT journal by ID. Returns the journal's pages and content. Can read from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -928,6 +972,8 @@ fn update_journal() -> ToolMetadata {
         mcp_enabled: true,
         description: "Update an existing Foundry VTT journal. Can modify name, content, or pages. Works with world or compendium (if unlocked). Rich text supports cross-document links: @UUID[Type.ID]{Label} (e.g., @UUID[Actor.abc123]{Guard Captain}). Types: Actor, Item, JournalEntry, Scene, RollTable.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -974,6 +1020,8 @@ fn delete_journal() -> ToolMetadata {
         mcp_enabled: true,
         description: "Delete a Foundry VTT journal permanently. Works with world or compendium (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1001,6 +1049,8 @@ fn list_journals() -> ToolMetadata {
         mcp_enabled: true,
         description: "List journals in Foundry VTT. Can filter by name pattern. Lists from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1052,6 +1102,8 @@ fn add_journal_page() -> ToolMetadata {
         mcp_enabled: true,
         description: "Add a new page to an existing Foundry VTT journal. Use get_journal first to see existing pages. Works with world or compendium (if unlocked). Rich text supports cross-document links: @UUID[Type.ID]{Label} (e.g., @UUID[Actor.abc123]{Guard Captain}). Types: Actor, Item, JournalEntry, Scene, RollTable.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1100,6 +1152,8 @@ fn update_journal_page() -> ToolMetadata {
         mcp_enabled: true,
         description: "Update a specific page in a Foundry VTT journal. Use get_journal or list_journal_pages first to find page IDs. Works with world or compendium (if unlocked). Rich text supports cross-document links: @UUID[Type.ID]{Label} (e.g., @UUID[Actor.abc123]{Guard Captain}). Types: Actor, Item, JournalEntry, Scene, RollTable.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1147,6 +1201,8 @@ fn delete_journal_page() -> ToolMetadata {
         mcp_enabled: true,
         description: "Delete a specific page from a Foundry VTT journal. Use get_journal or list_journal_pages first to find page IDs. Works with world or compendium (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1178,6 +1234,8 @@ fn list_journal_pages() -> ToolMetadata {
         mcp_enabled: true,
         description: "List all pages in a Foundry VTT journal. Returns page IDs, names, types, and sort order. Works with world or compendium journals.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1205,6 +1263,8 @@ fn reorder_journal_pages() -> ToolMetadata {
         mcp_enabled: true,
         description: "Bulk reorder pages in a Foundry VTT journal. Provide an array of page IDs in the desired display order. Works with world or compendium (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1254,6 +1314,8 @@ fn create_rollable_table() -> ToolMetadata {
         mcp_enabled: true,
         description: "Create a Foundry VTT rollable table for random encounters, loot, events, etc. Can create in world or compendium. Results can be text, document links, or compendium references.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1304,6 +1366,8 @@ fn get_rollable_table() -> ToolMetadata {
         mcp_enabled: true,
         description: "Get a Foundry VTT rollable table by ID. Returns the table's formula and all results. Can read from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1331,6 +1395,8 @@ fn update_rollable_table() -> ToolMetadata {
         mcp_enabled: true,
         description: "Update an existing Foundry VTT rollable table. Can modify name, formula, or results. Works with world or compendium (if unlocked). Results can be text, document links, or compendium references.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1377,6 +1443,8 @@ fn delete_rollable_table() -> ToolMetadata {
         mcp_enabled: true,
         description: "Delete a Foundry VTT rollable table permanently. Works with world or compendium (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1404,6 +1472,8 @@ fn list_rollable_tables() -> ToolMetadata {
         mcp_enabled: true,
         description: "List rollable tables in Foundry VTT. Can filter by name pattern. Lists from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1455,6 +1525,8 @@ fn list_compendium_packs() -> ToolMetadata {
         mcp_enabled: true,
         description: "List available compendium packs. Compendiums store reusable documents (actors, items, journals, etc.) outside the world.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1482,6 +1554,8 @@ fn browse_compendium_pack() -> ToolMetadata {
         mcp_enabled: true,
         description: "List documents in a compendium pack. Uses lightweight index for fast browsing without loading full documents.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1521,6 +1595,8 @@ fn search_compendium_packs() -> ToolMetadata {
         mcp_enabled: true,
         description: "Search for documents across all compendium packs by name.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1553,6 +1629,8 @@ fn import_from_compendium() -> ToolMetadata {
         mcp_enabled: true,
         description: "Import documents from a compendium pack into the world. Creates copies in the world collection.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
@@ -1593,6 +1671,8 @@ fn export_to_compendium() -> ToolMetadata {
         mcp_enabled: true,
         description: "Export documents from the world to a compendium pack. Pack must be unlocked.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
         parameters: || {
             serde_json::json!({
                 "type": "object",
