@@ -16,7 +16,9 @@ use crate::service::SeneschalService;
 
 pub mod messages;
 
-pub use messages::{ClientMessage, DocumentProgressUpdate, ServerMessage};
+pub use messages::{
+    CaptioningProgressUpdate, ClientMessage, DocumentProgressUpdate, ServerMessage,
+};
 
 /// State for a single WebSocket connection
 struct ConnectionState {
@@ -148,6 +150,29 @@ impl WebSocketManager {
             debug!(
                 sent_count = sent_count,
                 "Broadcast document update to connections"
+            );
+        }
+    }
+
+    /// Broadcast a captioning progress update to all subscribed connections
+    pub fn broadcast_captioning_update(&self, update: CaptioningProgressUpdate) {
+        let msg: ServerMessage = update.into();
+        let mut sent_count = 0;
+
+        for entry in self.connections.iter() {
+            let conn = entry.value();
+            if conn.authenticated
+                && conn.subscribed_to_documents
+                && conn.tx.send(msg.clone()).is_ok()
+            {
+                sent_count += 1;
+            }
+        }
+
+        if sent_count > 0 {
+            debug!(
+                sent_count = sent_count,
+                "Broadcast captioning update to connections"
             );
         }
     }

@@ -109,7 +109,12 @@
       "SaveChanges": "Save Changes",
       "EditSuccess": "Document updated successfully.",
       "EditError": "Failed to update document.",
-      "TitleRequired": "Title is required."
+      "TitleRequired": "Title is required.",
+      "Captioning": "Captioning",
+      "CaptioningQueued": "Captioning queued",
+      "CaptioningPending": "Image captioning is queued",
+      "CaptioningInProgress": "Image captioning in progress",
+      "CaptioningFailed": "Image captioning failed"
     },
     "Images": {
       "Title": "Image Browser",

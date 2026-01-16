@@ -138,8 +138,16 @@ impl SearchService {
             .collect())
     }
 
-    /// Index multiple chunks
-    pub async fn index_chunks(&self, chunks: &[Chunk]) -> ServiceResult<()> {
+    /// Index multiple chunks with progress callback
+    /// The callback receives (current_progress, total) after each chunk is embedded
+    pub async fn index_chunks_with_progress<F>(
+        &self,
+        chunks: &[Chunk],
+        mut on_progress: F,
+    ) -> ServiceResult<()>
+    where
+        F: FnMut(usize, usize),
+    {
         if chunks.is_empty() {
             return Ok(());
         }
@@ -152,12 +160,17 @@ impl SearchService {
             let embedding = self.embed_text(&chunk.content).await?;
             self.db.insert_embedding(&chunk.id, &embedding)?;
 
+            let progress = i + 1;
+
+            // Call the progress callback
+            on_progress(progress, total);
+
             // Log progress every 10 chunks or at completion
-            if (i + 1) % 10 == 0 || i + 1 == total {
+            if progress % 10 == 0 || progress == total {
                 info!(
-                    progress = i + 1,
+                    progress = progress,
                     total = total,
-                    percent = ((i + 1) * 100) / total,
+                    percent = (progress * 100) / total,
                     "Generating embeddings"
                 );
             }

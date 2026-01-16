@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::config::{AppConfig, AssetsAccess};
 use crate::db::{
-    Conversation, ConversationMessage, ConversationMetadata, Database, Document,
+    CaptioningStatus, Conversation, ConversationMessage, ConversationMetadata, Database, Document,
     FvttImageDescription, MessageRole, ProcessingStatus, ToolCallRecord, ToolResultRecord,
 };
 use crate::error::{ServiceError, ServiceResult, format_error_chain_ref};
@@ -2118,6 +2118,10 @@ impl SeneschalService {
             processing_phase: Some("queued".to_string()),
             processing_progress: None,
             processing_total: None,
+            captioning_status: CaptioningStatus::NotRequested,
+            captioning_error: None,
+            captioning_progress: None,
+            captioning_total: None,
             created_at: now,
             updated_at: now,
         };
@@ -2157,6 +2161,297 @@ impl SeneschalService {
                 }
             }
         });
+    }
+
+    /// Start the image captioning worker
+    /// This runs as a separate background task to caption document images without blocking document processing
+    pub fn start_captioning_worker(service: Arc<SeneschalService>) {
+        tokio::spawn(async move {
+            info!("Image captioning worker started");
+            loop {
+                // Check for documents pending captioning
+                match service.db.get_next_pending_captioning_document() {
+                    Ok(Some(doc)) => {
+                        info!(doc_id = %doc.id, title = %doc.title, "Captioning images for document");
+                        service.caption_document_images(&doc).await;
+                    }
+                    Ok(None) => {
+                        // No pending captioning, sleep before checking again
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Failed to check for documents pending captioning");
+                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Broadcast captioning progress via WebSocket
+    fn broadcast_captioning_progress(
+        &self,
+        document_id: &str,
+        status: &str,
+        progress: Option<usize>,
+        total: Option<usize>,
+        error: Option<&str>,
+    ) {
+        self.ws_manager
+            .broadcast_captioning_update(crate::websocket::CaptioningProgressUpdate {
+                document_id: document_id.to_string(),
+                status: status.to_string(),
+                progress,
+                total,
+                error: error.map(String::from),
+            });
+    }
+
+    /// Caption images for a single document (called by the captioning worker)
+    /// This method is resumable - it only captions images without descriptions
+    async fn caption_document_images(&self, document: &Document) {
+        let doc_id = &document.id;
+        let title = &document.title;
+
+        let file_path = match &document.file_path {
+            Some(p) => std::path::PathBuf::from(p),
+            None => {
+                error!(doc_id = %doc_id, "Document has no file path for captioning");
+                let _ = self.db.update_captioning_status(
+                    doc_id,
+                    CaptioningStatus::Failed,
+                    Some("Document has no file path"),
+                );
+                self.broadcast_captioning_progress(
+                    doc_id,
+                    "failed",
+                    None,
+                    None,
+                    Some("Document has no file path"),
+                );
+                return;
+            }
+        };
+
+        // Extract vision model from metadata
+        let vision_model = match document
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("vision_model"))
+            .and_then(|v| v.as_str())
+        {
+            Some(model) => model.to_string(),
+            None => {
+                error!(doc_id = %doc_id, "Document has no vision model specified");
+                let _ = self.db.update_captioning_status(
+                    doc_id,
+                    CaptioningStatus::Failed,
+                    Some("No vision model specified"),
+                );
+                self.broadcast_captioning_progress(
+                    doc_id,
+                    "failed",
+                    None,
+                    None,
+                    Some("No vision model specified"),
+                );
+                return;
+            }
+        };
+
+        // Get images that need captioning
+        let images_to_caption = match self.db.get_images_without_descriptions(doc_id) {
+            Ok(images) => images,
+            Err(e) => {
+                error!(doc_id = %doc_id, error = %e, "Failed to get images for captioning");
+                let error_msg = format!("Failed to query images: {}", e);
+                let _ = self.db.update_captioning_status(
+                    doc_id,
+                    CaptioningStatus::Failed,
+                    Some(&error_msg),
+                );
+                self.broadcast_captioning_progress(doc_id, "failed", None, None, Some(&error_msg));
+                return;
+            }
+        };
+
+        if images_to_caption.is_empty() {
+            // All images already captioned
+            let _ = self
+                .db
+                .update_captioning_status(doc_id, CaptioningStatus::Completed, None);
+            let _ = self.db.clear_captioning_progress(doc_id);
+            self.broadcast_captioning_progress(doc_id, "completed", None, None, None);
+            info!(doc_id = %doc_id, "All images already captioned");
+            return;
+        }
+
+        // Mark as in_progress in database BEFORE starting work
+        // This prevents the document from being picked up again if the worker restarts
+        let _ = self
+            .db
+            .update_captioning_status(doc_id, CaptioningStatus::InProgress, None);
+
+        let total_images = self
+            .db
+            .get_image_count(doc_id)
+            .unwrap_or(images_to_caption.len());
+        let already_captioned = total_images - images_to_caption.len();
+
+        // Update database with initial progress and broadcast
+        let _ = self
+            .db
+            .update_captioning_progress(doc_id, already_captioned, total_images);
+        self.broadcast_captioning_progress(
+            doc_id,
+            "in_progress",
+            Some(already_captioned),
+            Some(total_images),
+            None,
+        );
+
+        info!(
+            doc_id = %doc_id,
+            remaining = images_to_caption.len(),
+            already_captioned = already_captioned,
+            total = total_images,
+            model = %vision_model,
+            "Captioning remaining images"
+        );
+
+        // Extract page text for context (all unique pages from images to caption)
+        let unique_pages: std::collections::HashSet<i32> = images_to_caption
+            .iter()
+            .flat_map(|img| {
+                img.source_pages
+                    .clone()
+                    .unwrap_or_else(|| vec![img.page_number])
+            })
+            .collect();
+
+        let page_list: Vec<i32> = unique_pages.into_iter().collect();
+        let page_texts = match self.ingestion.extract_pdf_page_text(&file_path, &page_list) {
+            Ok(texts) => {
+                debug!(
+                    doc_id = %doc_id,
+                    pages = texts.len(),
+                    "Extracted page text for image captioning context"
+                );
+                texts
+            }
+            Err(e) => {
+                warn!(
+                    doc_id = %doc_id,
+                    error = %e,
+                    "Failed to extract page text, captioning without context"
+                );
+                std::collections::HashMap::new()
+            }
+        };
+
+        // Caption each image
+        for (i, image) in images_to_caption.iter().enumerate() {
+            let current_progress = already_captioned + i + 1;
+            let _ = self
+                .db
+                .update_captioning_progress(doc_id, current_progress, total_images);
+            self.broadcast_captioning_progress(
+                doc_id,
+                "in_progress",
+                Some(current_progress),
+                Some(total_images),
+                None,
+            );
+
+            debug!(
+                doc_id = %doc_id,
+                image_id = %image.id,
+                progress = current_progress,
+                total = total_images,
+                "Captioning image"
+            );
+
+            // Build page context for this image
+            let mut source_pages = image
+                .source_pages
+                .clone()
+                .unwrap_or_else(|| vec![image.page_number]);
+            source_pages.sort();
+            let context: String = source_pages
+                .iter()
+                .filter_map(|p| {
+                    page_texts
+                        .get(p)
+                        .map(|t| format!("--- Page {} ---\n{}", p, t))
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let page_context = if context.is_empty() {
+                None
+            } else {
+                Some(context.as_str())
+            };
+
+            let image_path = std::path::Path::new(&image.internal_path);
+            match self
+                .caption_image(image_path, &vision_model, title, page_context)
+                .await
+            {
+                Ok(Some(description)) => {
+                    if let Err(e) = self.db.update_image_description(&image.id, &description) {
+                        warn!(
+                            image_id = %image.id,
+                            error = %e,
+                            "Failed to update image description"
+                        );
+                    } else {
+                        // Generate and store embedding for the description
+                        match self.search.embed_text(&description).await {
+                            Ok(embedding) => {
+                                if let Err(e) =
+                                    self.db.insert_image_embedding(&image.id, &embedding)
+                                {
+                                    warn!(
+                                        image_id = %image.id,
+                                        error = %e,
+                                        "Failed to store image embedding"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    image_id = %image.id,
+                                    error = %e,
+                                    "Failed to generate image embedding"
+                                );
+                            }
+                        }
+                        debug!(
+                            image_id = %image.id,
+                            description_len = description.len(),
+                            "Image captioned successfully"
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(
+                        image_id = %image.id,
+                        error = %e,
+                        "Failed to caption image"
+                    );
+                }
+            }
+        }
+
+        // Mark captioning as complete
+        let _ = self
+            .db
+            .update_captioning_status(doc_id, CaptioningStatus::Completed, None);
+        let _ = self.db.clear_captioning_progress(doc_id);
+        self.broadcast_captioning_progress(doc_id, "completed", None, None, None);
+
+        info!(doc_id = %doc_id, "Image captioning complete");
     }
 
     /// Broadcast document processing progress via WebSocket
@@ -2330,7 +2625,43 @@ impl SeneschalService {
                 None,
             );
 
-            if let Err(e) = self.search.index_chunks(&chunks_to_embed).await {
+            // Clone Arc references for use in progress callback
+            let db_for_progress = Arc::clone(&self.db);
+            let ws_manager_for_progress = Arc::clone(&self.ws_manager);
+            let doc_id_for_progress = doc_id.to_string();
+
+            let result = self
+                .search
+                .index_chunks_with_progress(&chunks_to_embed, |progress, _total| {
+                    let current = already_embedded + progress;
+                    let _ = db_for_progress.update_document_progress(
+                        &doc_id_for_progress,
+                        "embedding",
+                        current,
+                        total_chunks,
+                    );
+
+                    // Broadcast progress update
+                    let chunk_count = db_for_progress
+                        .get_chunk_count(&doc_id_for_progress)
+                        .unwrap_or(0);
+                    let image_count = db_for_progress
+                        .get_image_count(&doc_id_for_progress)
+                        .unwrap_or(0);
+                    ws_manager_for_progress.broadcast_document_update(DocumentProgressUpdate {
+                        document_id: doc_id_for_progress.clone(),
+                        status: "processing".to_string(),
+                        phase: Some("embedding".to_string()),
+                        progress: Some(current),
+                        total: Some(total_chunks),
+                        error: None,
+                        chunk_count,
+                        image_count,
+                    });
+                })
+                .await;
+
+            if let Err(e) = result {
                 error!(doc_id = %doc_id, error = %e, "Failed to index chunks");
                 let error_msg = format!("Embedding generation failed: {}", e);
                 let _ = self.db.update_document_processing_status(
@@ -2399,157 +2730,20 @@ impl SeneschalService {
                 info!(doc_id = %doc_id, images = image_count, "Images already exist, skipping extraction");
             }
 
-            // Step 4: Caption images that don't have descriptions yet
-            if let Some(ref model) = vision_model {
+            // Queue for captioning if vision model is specified and there are images to caption
+            if vision_model.is_some() && image_count > 0 {
                 let images_to_caption = self
                     .db
                     .get_images_without_descriptions(doc_id)
                     .unwrap_or_default();
 
                 if !images_to_caption.is_empty() {
-                    let total_images = image_count;
-                    let already_captioned = total_images - images_to_caption.len();
                     info!(
                         doc_id = %doc_id,
-                        remaining = images_to_caption.len(),
-                        already_captioned = already_captioned,
-                        total = total_images,
-                        model = %model,
-                        "Captioning remaining images"
+                        images = images_to_caption.len(),
+                        "Queueing document for image captioning"
                     );
-
-                    // Extract page text for context
-                    // Collect all unique pages from images to caption
-                    let unique_pages: std::collections::HashSet<i32> = images_to_caption
-                        .iter()
-                        .flat_map(|img| {
-                            img.source_pages
-                                .clone()
-                                .unwrap_or_else(|| vec![img.page_number])
-                        })
-                        .collect();
-
-                    let page_list: Vec<i32> = unique_pages.into_iter().collect();
-                    let page_texts =
-                        match self.ingestion.extract_pdf_page_text(&file_path, &page_list) {
-                            Ok(texts) => {
-                                debug!(
-                                    doc_id = %doc_id,
-                                    pages = texts.len(),
-                                    "Extracted page text for image captioning context"
-                                );
-                                texts
-                            }
-                            Err(e) => {
-                                warn!(
-                                    doc_id = %doc_id,
-                                    error = %e,
-                                    "Failed to extract page text, captioning without context"
-                                );
-                                std::collections::HashMap::new()
-                            }
-                        };
-
-                    for (i, image) in images_to_caption.iter().enumerate() {
-                        let current_progress = already_captioned + i + 1;
-                        let _ = self.db.update_document_progress(
-                            doc_id,
-                            "captioning",
-                            current_progress,
-                            total_images,
-                        );
-                        self.broadcast_document_progress(
-                            doc_id,
-                            "processing",
-                            Some("captioning"),
-                            Some(current_progress),
-                            Some(total_images),
-                            None,
-                        );
-                        info!(
-                            doc_id = %doc_id,
-                            progress = current_progress,
-                            total = total_images,
-                            "Captioning image"
-                        );
-
-                        // Build page context for this image
-                        let mut source_pages = image
-                            .source_pages
-                            .clone()
-                            .unwrap_or_else(|| vec![image.page_number]);
-                        source_pages.sort();
-                        let context: String = source_pages
-                            .iter()
-                            .filter_map(|p| {
-                                page_texts
-                                    .get(p)
-                                    .map(|t| format!("--- Page {} ---\n{}", p, t))
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n\n");
-                        let page_context = if context.is_empty() {
-                            None
-                        } else {
-                            Some(context.as_str())
-                        };
-
-                        let image_path = std::path::Path::new(&image.internal_path);
-                        match self
-                            .caption_image(image_path, model, title, page_context)
-                            .await
-                        {
-                            Ok(Some(description)) => {
-                                if let Err(e) =
-                                    self.db.update_image_description(&image.id, &description)
-                                {
-                                    warn!(
-                                        image_id = %image.id,
-                                        error = %e,
-                                        "Failed to update image description"
-                                    );
-                                } else {
-                                    // Generate and store embedding for the description
-                                    match self.search.embed_text(&description).await {
-                                        Ok(embedding) => {
-                                            if let Err(e) = self
-                                                .db
-                                                .insert_image_embedding(&image.id, &embedding)
-                                            {
-                                                warn!(
-                                                    image_id = %image.id,
-                                                    error = %e,
-                                                    "Failed to store image embedding"
-                                                );
-                                            }
-                                        }
-                                        Err(e) => {
-                                            warn!(
-                                                image_id = %image.id,
-                                                error = %e,
-                                                "Failed to generate image embedding"
-                                            );
-                                        }
-                                    }
-                                    debug!(
-                                        image_id = %image.id,
-                                        description_len = description.len(),
-                                        "Image captioned successfully"
-                                    );
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(e) => {
-                                warn!(
-                                    image_id = %image.id,
-                                    error = %e,
-                                    "Failed to caption image"
-                                );
-                            }
-                        }
-                    }
-
-                    info!(doc_id = %doc_id, "Image captioning complete");
+                    let _ = self.db.set_captioning_pending(doc_id);
                 } else {
                     info!(doc_id = %doc_id, "All images already captioned");
                 }

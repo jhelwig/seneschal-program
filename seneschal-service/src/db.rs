@@ -1,9 +1,9 @@
 mod models;
 
 pub use models::{
-    Chunk, Conversation, ConversationMessage, ConversationMetadata, Document, DocumentImage,
-    DocumentImageWithAccess, FvttImageDescription, ImageType, MessageRole, ProcessingStatus,
-    ToolCallRecord, ToolResultRecord,
+    CaptioningStatus, Chunk, Conversation, ConversationMessage, ConversationMetadata, Document,
+    DocumentImage, DocumentImageWithAccess, FvttImageDescription, ImageType, MessageRole,
+    ProcessingStatus, ToolCallRecord, ToolResultRecord,
 };
 
 use chrono::{DateTime, Utc};
@@ -399,6 +399,61 @@ impl Database {
             })?;
         }
 
+        // Migration: Add captioning status columns for separate background captioning
+        let has_captioning_status: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('documents') WHERE name='captioning_status'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+            > 0;
+
+        if !has_captioning_status {
+            conn.execute_batch(
+                r#"
+                ALTER TABLE documents ADD COLUMN captioning_status TEXT NOT NULL DEFAULT 'not_requested';
+                ALTER TABLE documents ADD COLUMN captioning_error TEXT;
+                ALTER TABLE documents ADD COLUMN captioning_progress INTEGER;
+                ALTER TABLE documents ADD COLUMN captioning_total INTEGER;
+                "#,
+            )
+            .map_err(|e| DatabaseError::Migration {
+                message: format!("Failed to add captioning columns: {}", e),
+            })?;
+
+            // Migrate existing documents:
+            // 1. Documents currently in captioning phase -> set captioning_status = 'pending', mark document completed
+            // 2. Completed documents with vision_model but uncaptioned images -> set captioning_status = 'pending'
+            conn.execute_batch(
+                r#"
+                -- Documents currently in captioning phase: queue them for the new worker
+                UPDATE documents
+                SET captioning_status = 'pending',
+                    processing_status = 'completed',
+                    processing_phase = NULL,
+                    processing_progress = NULL,
+                    processing_total = NULL
+                WHERE processing_status = 'processing'
+                AND processing_phase = 'captioning';
+
+                -- Completed documents with vision_model but uncaptioned images
+                UPDATE documents
+                SET captioning_status = 'pending'
+                WHERE processing_status = 'completed'
+                AND metadata LIKE '%"vision_model":%'
+                AND captioning_status = 'not_requested'
+                AND id IN (
+                    SELECT document_id FROM document_images
+                    WHERE description IS NULL OR description = ''
+                );
+                "#,
+            )
+            .map_err(|e| DatabaseError::Migration {
+                message: format!("Failed to migrate existing documents for captioning: {}", e),
+            })?;
+        }
+
         Ok(())
     }
 
@@ -415,8 +470,8 @@ impl Database {
 
         conn.execute(
             r#"
-            INSERT INTO documents (id, title, file_path, file_hash, access_level, metadata, created_at, updated_at, processing_status, processing_error, processing_phase, processing_progress, processing_total)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            INSERT INTO documents (id, title, file_path, file_hash, access_level, metadata, created_at, updated_at, processing_status, processing_error, processing_phase, processing_progress, processing_total, captioning_status, captioning_error, captioning_progress, captioning_total)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
             "#,
             params![
                 doc.id,
@@ -432,6 +487,10 @@ impl Database {
                 doc.processing_phase,
                 doc.processing_progress.map(|p| p as i64),
                 doc.processing_total.map(|t| t as i64),
+                doc.captioning_status.as_str(),
+                doc.captioning_error,
+                doc.captioning_progress.map(|p| p as i64),
+                doc.captioning_total.map(|t| t as i64),
             ],
         )
         .map_err(DatabaseError::Query)?;
@@ -457,7 +516,8 @@ impl Database {
                 "SELECT d.id, d.title, d.file_path, d.file_hash, d.access_level, d.metadata, d.created_at, d.updated_at, d.processing_status, d.processing_error, \
                  (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as chunk_count, \
                  (SELECT COUNT(*) FROM document_images WHERE document_id = d.id) as image_count, \
-                 d.processing_phase, d.processing_progress, d.processing_total \
+                 d.processing_phase, d.processing_progress, d.processing_total, \
+                 d.captioning_status, d.captioning_error, d.captioning_progress, d.captioning_total \
                  FROM documents d WHERE d.id = ?1",
                 params![id],
                 |row| Document::from_row(row, vec![]),
@@ -505,7 +565,8 @@ impl Database {
                     "SELECT d.id, d.title, d.file_path, d.file_hash, d.access_level, d.metadata, d.created_at, d.updated_at, d.processing_status, d.processing_error, \
                      (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as chunk_count, \
                      (SELECT COUNT(*) FROM document_images WHERE document_id = d.id) as image_count, \
-                     d.processing_phase, d.processing_progress, d.processing_total \
+                     d.processing_phase, d.processing_progress, d.processing_total, \
+                     d.captioning_status, d.captioning_error, d.captioning_progress, d.captioning_total \
                      FROM documents d WHERE d.access_level <= ?1 ORDER BY d.title"
                 )
                 .map_err(DatabaseError::Query)?;
@@ -521,7 +582,8 @@ impl Database {
                     "SELECT d.id, d.title, d.file_path, d.file_hash, d.access_level, d.metadata, d.created_at, d.updated_at, d.processing_status, d.processing_error, \
                      (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as chunk_count, \
                      (SELECT COUNT(*) FROM document_images WHERE document_id = d.id) as image_count, \
-                     d.processing_phase, d.processing_progress, d.processing_total \
+                     d.processing_phase, d.processing_progress, d.processing_total, \
+                     d.captioning_status, d.captioning_error, d.captioning_progress, d.captioning_total \
                      FROM documents d ORDER BY d.title"
                 )
                 .map_err(DatabaseError::Query)?;
@@ -1458,7 +1520,8 @@ impl Database {
                 "SELECT d.id, d.title, d.file_path, d.file_hash, d.access_level, d.metadata, d.created_at, d.updated_at, d.processing_status, d.processing_error, \
                  (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as chunk_count, \
                  (SELECT COUNT(*) FROM document_images WHERE document_id = d.id) as image_count, \
-                 d.processing_phase, d.processing_progress, d.processing_total \
+                 d.processing_phase, d.processing_progress, d.processing_total, \
+                 d.captioning_status, d.captioning_error, d.captioning_progress, d.captioning_total \
                  FROM documents d WHERE d.processing_status = 'processing' ORDER BY d.created_at ASC LIMIT 1",
                 [],
                 |row| Document::from_row(row, vec![]),
@@ -1583,6 +1646,111 @@ impl Database {
             .collect();
 
         Ok(images)
+    }
+
+    /// Set a document's captioning status to pending
+    /// Called after image extraction when a vision model is specified
+    pub fn set_captioning_pending(&self, document_id: &str) -> ServiceResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let rows = conn
+            .execute(
+                "UPDATE documents SET captioning_status = 'pending', captioning_error = NULL, updated_at = datetime('now') WHERE id = ?1",
+                params![document_id],
+            )
+            .map_err(DatabaseError::Query)?;
+
+        Ok(rows > 0)
+    }
+
+    /// Get the next document needing captioning (oldest first)
+    /// Prioritizes in_progress documents (to resume interrupted work) over pending ones
+    /// Used by the captioning worker queue
+    pub fn get_next_pending_captioning_document(&self) -> ServiceResult<Option<Document>> {
+        let conn = self.conn.lock().unwrap();
+
+        let doc = conn
+            .query_row(
+                "SELECT d.id, d.title, d.file_path, d.file_hash, d.access_level, d.metadata, d.created_at, d.updated_at, d.processing_status, d.processing_error, \
+                 (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as chunk_count, \
+                 (SELECT COUNT(*) FROM document_images WHERE document_id = d.id) as image_count, \
+                 d.processing_phase, d.processing_progress, d.processing_total, \
+                 d.captioning_status, d.captioning_error, d.captioning_progress, d.captioning_total \
+                 FROM documents d WHERE d.captioning_status IN ('in_progress', 'pending') \
+                 ORDER BY CASE d.captioning_status WHEN 'in_progress' THEN 0 ELSE 1 END, d.created_at ASC LIMIT 1",
+                [],
+                |row| Document::from_row(row, vec![]),
+            )
+            .optional()
+            .map_err(DatabaseError::Query)?;
+
+        if let Some(mut doc) = doc {
+            // Load tags
+            let mut stmt = conn
+                .prepare("SELECT tag FROM document_tags WHERE document_id = ?1")
+                .map_err(DatabaseError::Query)?;
+            let tags: Vec<String> = stmt
+                .query_map(params![doc.id], |row| row.get(0))
+                .map_err(DatabaseError::Query)?
+                .filter_map(|r| r.ok())
+                .collect();
+            doc.tags = tags;
+            Ok(Some(doc))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Update captioning status
+    pub fn update_captioning_status(
+        &self,
+        document_id: &str,
+        status: models::CaptioningStatus,
+        error: Option<&str>,
+    ) -> ServiceResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let rows = conn
+            .execute(
+                "UPDATE documents SET captioning_status = ?1, captioning_error = ?2, updated_at = datetime('now') WHERE id = ?3",
+                params![status.as_str(), error, document_id],
+            )
+            .map_err(DatabaseError::Query)?;
+
+        Ok(rows > 0)
+    }
+
+    /// Update captioning progress
+    pub fn update_captioning_progress(
+        &self,
+        document_id: &str,
+        progress: usize,
+        total: usize,
+    ) -> ServiceResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let rows = conn
+            .execute(
+                "UPDATE documents SET captioning_status = 'in_progress', captioning_progress = ?1, captioning_total = ?2, updated_at = datetime('now') WHERE id = ?3",
+                params![progress as i64, total as i64, document_id],
+            )
+            .map_err(DatabaseError::Query)?;
+
+        Ok(rows > 0)
+    }
+
+    /// Clear captioning progress (called when captioning completes or fails)
+    pub fn clear_captioning_progress(&self, document_id: &str) -> ServiceResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let rows = conn
+            .execute(
+                "UPDATE documents SET captioning_progress = NULL, captioning_total = NULL, updated_at = datetime('now') WHERE id = ?1",
+                params![document_id],
+            )
+            .map_err(DatabaseError::Query)?;
+
+        Ok(rows > 0)
     }
 }
 

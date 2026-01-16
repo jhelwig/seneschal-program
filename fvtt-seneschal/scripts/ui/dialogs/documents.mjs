@@ -31,7 +31,8 @@ export class DocumentManagementDialog extends Application {
     this.error = null;
     this.uploadProgress = null;
     this.processingDoc = null; // Document ID currently being re-processed (images)
-    this._wsUnsubscribe = null; // WebSocket event unsubscribe function
+    this._wsUnsubscribeDoc = null; // WebSocket document event unsubscribe function
+    this._wsUnsubscribeCaptioning = null; // WebSocket captioning event unsubscribe function
     this._imageBrowserDialogs = new Map(); // Track open image browser dialogs
   }
 
@@ -87,10 +88,14 @@ export class DocumentManagementDialog extends Application {
    * @private
    */
   _subscribeToUpdates() {
-    // Unsubscribe from any previous subscription
-    if (this._wsUnsubscribe) {
-      this._wsUnsubscribe();
-      this._wsUnsubscribe = null;
+    // Unsubscribe from any previous subscriptions
+    if (this._wsUnsubscribeDoc) {
+      this._wsUnsubscribeDoc();
+      this._wsUnsubscribeDoc = null;
+    }
+    if (this._wsUnsubscribeCaptioning) {
+      this._wsUnsubscribeCaptioning();
+      this._wsUnsubscribeCaptioning = null;
     }
 
     // Check if WebSocket is available and authenticated
@@ -102,8 +107,13 @@ export class DocumentManagementDialog extends Application {
     }
 
     // Listen for document progress updates
-    this._wsUnsubscribe = globalThis.seneschalWS.on("document_progress", (update) => {
+    this._wsUnsubscribeDoc = globalThis.seneschalWS.on("document_progress", (update) => {
       this._handleDocumentUpdate(update);
+    });
+
+    // Listen for captioning progress updates
+    this._wsUnsubscribeCaptioning = globalThis.seneschalWS.on("captioning_progress", (update) => {
+      this._handleCaptioningUpdate(update);
     });
 
     // Subscribe to documents channel
@@ -138,6 +148,30 @@ export class DocumentManagementDialog extends Application {
 
     // Update only the specific document row in the DOM (preserves form inputs)
     this._updateDocumentRowDOM(doc);
+  }
+
+  /**
+   * Handle captioning progress update from WebSocket
+   * @param {Object} update - Captioning progress update
+   * @private
+   */
+  _handleCaptioningUpdate(update) {
+    const docIndex = this.documents.findIndex((d) => d.id === update.document_id);
+
+    if (docIndex === -1) {
+      // Unknown document - ignore (captioning updates are less critical)
+      return;
+    }
+
+    // Update document captioning status in place
+    const doc = this.documents[docIndex];
+    doc.captioning_status = update.status;
+    doc.captioning_progress = update.progress;
+    doc.captioning_total = update.total;
+    doc.captioning_error = update.error;
+
+    // Update only the captioning indicator in the DOM
+    this._updateCaptioningIndicatorDOM(doc);
   }
 
   /**
@@ -211,6 +245,57 @@ export class DocumentManagementDialog extends Application {
         `<div class="document-error" title="${escapedError}"><i class="fas fa-exclamation-circle"></i></div>`
       );
     }
+
+    // Update captioning indicator
+    this._updateCaptioningIndicatorDOM(doc);
+  }
+
+  /**
+   * Update the captioning indicator in the DOM for a specific document
+   * @param {Object} doc - The document object with captioning properties
+   * @private
+   */
+  _updateCaptioningIndicatorDOM(doc) {
+    const row = this.element.find(`tr[data-document-id="${doc.id}"]`);
+    if (!row.length) return;
+
+    // Find or create the captioning indicator container in the status cell
+    const statusCell = row.find(".document-status");
+    const captioningIndicator = statusCell.find(".captioning-indicator");
+
+    // Build captioning indicator HTML based on status
+    let captioningHtml = "";
+    if (doc.captioning_status === "pending") {
+      captioningHtml = `<span class="captioning-indicator captioning-pending" title="${game.i18n.localize("SENESCHAL.Documents.CaptioningPending")}">
+        <i class="fas fa-image"></i> ${game.i18n.localize("SENESCHAL.Documents.CaptioningQueued")}
+      </span>`;
+    } else if (doc.captioning_status === "in_progress") {
+      const progress = doc.captioning_progress ?? 0;
+      const total = doc.captioning_total ?? 0;
+      captioningHtml = `<span class="captioning-indicator captioning-in-progress" title="${game.i18n.localize("SENESCHAL.Documents.CaptioningInProgress")}">
+        <i class="fas fa-image fa-spin"></i> ${game.i18n.localize("SENESCHAL.Documents.Captioning")} (${progress}/${total})
+      </span>`;
+    } else if (doc.captioning_status === "failed") {
+      const escapedError = (doc.captioning_error || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+      captioningHtml = `<span class="captioning-indicator captioning-failed" title="${escapedError || game.i18n.localize("SENESCHAL.Documents.CaptioningFailed")}">
+        <i class="fas fa-image"></i> <i class="fas fa-exclamation-triangle"></i>
+      </span>`;
+    }
+    // No indicator for "completed" or "not_requested" status
+
+    if (captioningIndicator.length) {
+      if (captioningHtml) {
+        captioningIndicator.replaceWith(captioningHtml);
+      } else {
+        captioningIndicator.remove();
+      }
+    } else if (captioningHtml) {
+      statusCell.append(captioningHtml);
+    }
   }
 
   /**
@@ -269,9 +354,13 @@ export class DocumentManagementDialog extends Application {
    */
   close(options) {
     // Unsubscribe from WebSocket updates
-    if (this._wsUnsubscribe) {
-      this._wsUnsubscribe();
-      this._wsUnsubscribe = null;
+    if (this._wsUnsubscribeDoc) {
+      this._wsUnsubscribeDoc();
+      this._wsUnsubscribeDoc = null;
+    }
+    if (this._wsUnsubscribeCaptioning) {
+      this._wsUnsubscribeCaptioning();
+      this._wsUnsubscribeCaptioning = null;
     }
     globalThis.seneschalWS?.unsubscribeFromDocuments();
 

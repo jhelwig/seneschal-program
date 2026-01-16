@@ -90,6 +90,20 @@
             {{else}}
             <i class="fas fa-check-circle"></i> {{localize "SENESCHAL.Documents.StatusCompleted"}}
             {{/if}}
+            {{!-- Captioning indicator (shown separately from document processing) --}}
+            {{#if (eq this.captioning_status 'pending')}}
+            <span class="captioning-indicator captioning-pending" title="{{localize 'SENESCHAL.Documents.CaptioningPending'}}">
+              <i class="fas fa-image"></i> {{localize "SENESCHAL.Documents.CaptioningQueued"}}
+            </span>
+            {{else if (eq this.captioning_status 'in_progress')}}
+            <span class="captioning-indicator captioning-in-progress" title="{{localize 'SENESCHAL.Documents.CaptioningInProgress'}}">
+              <i class="fas fa-image fa-spin"></i> {{localize "SENESCHAL.Documents.Captioning"}} ({{this.captioning_progress}}/{{this.captioning_total}})
+            </span>
+            {{else if (eq this.captioning_status 'failed')}}
+            <span class="captioning-indicator captioning-failed" title="{{this.captioning_error}}">
+              <i class="fas fa-image"></i> <i class="fas fa-exclamation-triangle"></i>
+            </span>
+            {{/if}}
           </td>
           <td class="document-chunks">{{this.chunk_count}}</td>
           <td class="document-images">

@@ -71,6 +71,18 @@ pub enum ServerMessage {
         chunk_count: usize,
         image_count: usize,
     },
+    /// Image captioning progress update (separate from document processing)
+    CaptioningProgress {
+        document_id: String,
+        /// Status: "pending", "in_progress", "completed", "failed"
+        status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        progress: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Keepalive pong response
     Pong { timestamp: u64 },
     /// Error message
@@ -154,6 +166,28 @@ impl From<DocumentProgressUpdate> for ServerMessage {
             error: update.error,
             chunk_count: update.chunk_count,
             image_count: update.image_count,
+        }
+    }
+}
+
+/// Data for broadcasting captioning progress updates
+#[derive(Debug, Clone)]
+pub struct CaptioningProgressUpdate {
+    pub document_id: String,
+    pub status: String,
+    pub progress: Option<usize>,
+    pub total: Option<usize>,
+    pub error: Option<String>,
+}
+
+impl From<CaptioningProgressUpdate> for ServerMessage {
+    fn from(update: CaptioningProgressUpdate) -> Self {
+        ServerMessage::CaptioningProgress {
+            document_id: update.document_id,
+            status: update.status,
+            progress: update.progress,
+            total: update.total,
+            error: update.error,
         }
     }
 }

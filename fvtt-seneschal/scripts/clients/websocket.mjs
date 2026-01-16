@@ -125,6 +125,9 @@ export class WebSocketClient {
       case "document_progress":
         this._emit("document_progress", msg);
         break;
+      case "captioning_progress":
+        this._emit("captioning_progress", msg);
+        break;
       case "pong":
         // Keepalive acknowledged
         break;

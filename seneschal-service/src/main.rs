@@ -53,6 +53,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start document processing worker (resumes any pending documents)
     SeneschalService::start_document_processing_worker(service.clone());
 
+    // Start image captioning worker (runs in parallel, separate from document processing)
+    SeneschalService::start_captioning_worker(service.clone());
+
     // Start conversation cleanup background task
     let cleanup_service = service.clone();
     let cleanup_interval = config.conversation.cleanup_interval();

@@ -409,3 +409,27 @@
 .seneschal-documents-table .seneschal-browse-images {
   color: var(--color-primary);
 }
+
+/* Captioning indicator styles */
+.captioning-indicator {
+  display: block;
+  font-size: 0.75rem;
+  margin-top: 0.25rem;
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.25rem;
+}
+
+.captioning-indicator.captioning-pending {
+  color: var(--color-text-secondary);
+  background: rgba(128, 128, 128, 0.1);
+}
+
+.captioning-indicator.captioning-in-progress {
+  color: var(--color-primary);
+  background: rgba(var(--color-primary-rgb, 0, 128, 255), 0.1);
+}
+
+.captioning-indicator.captioning-failed {
+  color: var(--color-level-error);
+  background: rgba(255, 0, 0, 0.1);
+}

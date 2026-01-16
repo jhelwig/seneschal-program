@@ -38,6 +38,45 @@ impl ProcessingStatus {
     }
 }
 
+/// Captioning status for document images (separate from document processing)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptioningStatus {
+    /// No vision model specified, captioning not requested
+    #[default]
+    NotRequested,
+    /// Queued for captioning
+    Pending,
+    /// Currently captioning images
+    InProgress,
+    /// All images have been captioned
+    Completed,
+    /// Captioning failed
+    Failed,
+}
+
+impl CaptioningStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CaptioningStatus::NotRequested => "not_requested",
+            CaptioningStatus::Pending => "pending",
+            CaptioningStatus::InProgress => "in_progress",
+            CaptioningStatus::Completed => "completed",
+            CaptioningStatus::Failed => "failed",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "pending" => CaptioningStatus::Pending,
+            "in_progress" => CaptioningStatus::InProgress,
+            "completed" => CaptioningStatus::Completed,
+            "failed" => CaptioningStatus::Failed,
+            _ => CaptioningStatus::NotRequested,
+        }
+    }
+}
+
 /// Document record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
@@ -53,7 +92,7 @@ pub struct Document {
     pub processing_error: Option<String>,
     pub chunk_count: usize,
     pub image_count: usize,
-    /// Current processing phase (e.g., "chunking", "embedding", "extracting_images", "captioning")
+    /// Current processing phase (e.g., "chunking", "embedding", "extracting_images")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub processing_phase: Option<String>,
     /// Current progress within the phase
@@ -62,6 +101,18 @@ pub struct Document {
     /// Total items in the current phase
     #[serde(skip_serializing_if = "Option::is_none")]
     pub processing_total: Option<usize>,
+    /// Status of image captioning (separate from document processing)
+    #[serde(default)]
+    pub captioning_status: CaptioningStatus,
+    /// Error message if captioning failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captioning_error: Option<String>,
+    /// Current captioning progress (images captioned so far)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captioning_progress: Option<usize>,
+    /// Total images to caption
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captioning_total: Option<usize>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -79,6 +130,10 @@ impl Document {
         let processing_phase: Option<String> = row.get(12)?;
         let processing_progress: Option<i64> = row.get(13)?;
         let processing_total: Option<i64> = row.get(14)?;
+        let captioning_status_str: String = row.get(15)?;
+        let captioning_error: Option<String> = row.get(16)?;
+        let captioning_progress: Option<i64> = row.get(17)?;
+        let captioning_total: Option<i64> = row.get(18)?;
 
         Ok(Self {
             id: row.get(0)?,
@@ -95,6 +150,10 @@ impl Document {
             processing_phase,
             processing_progress: processing_progress.map(|p| p as usize),
             processing_total: processing_total.map(|t| t as usize),
+            captioning_status: CaptioningStatus::from_str(&captioning_status_str),
+            captioning_error,
+            captioning_progress: captioning_progress.map(|p| p as usize),
+            captioning_total: captioning_total.map(|t| t as usize),
             created_at: DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
