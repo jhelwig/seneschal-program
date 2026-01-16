@@ -31,6 +31,7 @@ pub enum ToolName {
     DocumentGet,
     DocumentList,
     DocumentFind,
+    DocumentUpdate,
 
     // ==========================================
     // Image tools (Internal)

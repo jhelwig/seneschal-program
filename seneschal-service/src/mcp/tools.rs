@@ -69,6 +69,7 @@ async fn execute_internal_tool(
         "document_get" => execute_document_get(state, arguments, gm_role),
         "document_list" => execute_document_list(state, arguments, gm_role),
         "document_find" => execute_document_find(state, arguments, gm_role),
+        "document_update" => execute_document_update(state, arguments, gm_role),
         "image_list" => execute_image_list(state, arguments, gm_role),
         "image_search" => execute_image_search(state, arguments, gm_role).await,
         "image_get" => execute_image_get(state, arguments, gm_role),
@@ -536,6 +537,102 @@ fn execute_document_find(
                 }]
             }))
         }
+        Err(e) => Err(McpError {
+            code: -32000,
+            message: e.to_string(),
+        }),
+    }
+}
+
+fn execute_document_update(
+    state: &McpState,
+    arguments: &serde_json::Value,
+    gm_role: u8,
+) -> Result<serde_json::Value, McpError> {
+    let doc_id = arguments
+        .get("document_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // Get current document
+    let current_doc = match state.service.db.get_document(doc_id) {
+        Ok(Some(doc)) => doc,
+        Ok(None) => {
+            return Err(McpError {
+                code: -32000,
+                message: "Document not found".to_string(),
+            });
+        }
+        Err(e) => {
+            return Err(McpError {
+                code: -32000,
+                message: e.to_string(),
+            });
+        }
+    };
+
+    // Check access
+    if !current_doc.access_level.accessible_by(gm_role) {
+        return Err(McpError {
+            code: -32000,
+            message: "Access denied".to_string(),
+        });
+    }
+
+    // Parse optional updates
+    let new_title = arguments
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&current_doc.title)
+        .to_string();
+
+    let new_access_level = arguments
+        .get("access_level")
+        .and_then(|v| v.as_str())
+        .map(|s| match s {
+            "player" => crate::tools::AccessLevel::Player,
+            "trusted" => crate::tools::AccessLevel::Trusted,
+            "assistant" => crate::tools::AccessLevel::Assistant,
+            _ => crate::tools::AccessLevel::GmOnly,
+        })
+        .unwrap_or(current_doc.access_level);
+
+    let new_tags: Vec<String> = arguments
+        .get("tags")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_else(|| current_doc.tags.clone());
+
+    match state
+        .service
+        .update_document(doc_id, &new_title, new_access_level, new_tags.clone())
+    {
+        Ok(true) => {
+            let result = serde_json::json!({
+                "success": true,
+                "document_id": doc_id,
+                "updated": {
+                    "title": new_title,
+                    "access_level": format!("{:?}", new_access_level).to_lowercase(),
+                    "tags": new_tags
+                }
+            });
+            let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+            Ok(serde_json::json!({
+                "content": [{
+                    "type": "text",
+                    "text": text
+                }]
+            }))
+        }
+        Ok(false) => Err(McpError {
+            code: -32000,
+            message: "Document not found".to_string(),
+        }),
         Err(e) => Err(McpError {
             code: -32000,
             message: e.to_string(),

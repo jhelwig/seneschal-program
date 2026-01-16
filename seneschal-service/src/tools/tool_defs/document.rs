@@ -14,6 +14,7 @@ pub fn register(registry: &mut HashMap<ToolName, ToolMetadata>) {
         document_get(),
         document_list(),
         document_find(),
+        document_update(),
     ];
     for tool in tools {
         registry.insert(tool.name, tool);
@@ -155,6 +156,43 @@ fn document_find() -> ToolMetadata {
                     }
                 },
                 "required": ["title"]
+            })
+        },
+    }
+}
+
+fn document_update() -> ToolMetadata {
+    ToolMetadata {
+        name: ToolName::DocumentUpdate,
+        location: ToolLocation::Internal,
+        ollama_enabled: true,
+        mcp_enabled: true,
+        description: "Update document metadata (title, access level, and/or tags). Use document_list or document_find to get document IDs first. Tags are replaced entirely - provide all desired tags.",
+        mcp_suffix: None,
+        parameters: || {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "document_id": {
+                        "type": "string",
+                        "description": "The unique identifier of the document to update"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "New title for the document"
+                    },
+                    "access_level": {
+                        "type": "string",
+                        "enum": ["player", "trusted", "assistant", "gm_only"],
+                        "description": "Who can access this document"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Tags for categorizing (replaces all existing tags)"
+                    }
+                },
+                "required": ["document_id"]
             })
         },
     }

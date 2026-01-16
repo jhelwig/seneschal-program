@@ -991,6 +991,80 @@ impl SeneschalService {
                     Err(e) => ToolResult::error(call.id.clone(), e.to_string()),
                 }
             }
+            "document_update" => {
+                let doc_id = call
+                    .args
+                    .get("document_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                // Get current document to fill in unchanged fields
+                let current_doc = match self.db.get_document(doc_id) {
+                    Ok(Some(doc)) => doc,
+                    Ok(None) => {
+                        return ToolResult::error(
+                            call.id.clone(),
+                            "Document not found".to_string(),
+                        );
+                    }
+                    Err(e) => return ToolResult::error(call.id.clone(), e.to_string()),
+                };
+
+                // Check access - user must have access to the document
+                if !current_doc.access_level.accessible_by(user_context.role) {
+                    return ToolResult::error(call.id.clone(), "Access denied".to_string());
+                }
+
+                // Parse optional updates, falling back to current values
+                let new_title = call
+                    .args
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&current_doc.title)
+                    .to_string();
+
+                let new_access_level = call
+                    .args
+                    .get("access_level")
+                    .and_then(|v| v.as_str())
+                    .map(|s| match s {
+                        "player" => crate::tools::AccessLevel::Player,
+                        "trusted" => crate::tools::AccessLevel::Trusted,
+                        "assistant" => crate::tools::AccessLevel::Assistant,
+                        _ => crate::tools::AccessLevel::GmOnly,
+                    })
+                    .unwrap_or(current_doc.access_level);
+
+                let new_tags: Vec<String> = call
+                    .args
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_else(|| current_doc.tags.clone());
+
+                match self.update_document(doc_id, &new_title, new_access_level, new_tags.clone()) {
+                    Ok(true) => ToolResult::success(
+                        call.id.clone(),
+                        serde_json::json!({
+                            "success": true,
+                            "document_id": doc_id,
+                            "updated": {
+                                "title": new_title,
+                                "access_level": format!("{:?}", new_access_level).to_lowercase(),
+                                "tags": new_tags
+                            }
+                        }),
+                    ),
+                    Ok(false) => {
+                        ToolResult::error(call.id.clone(), "Document not found".to_string())
+                    }
+                    Err(e) => ToolResult::error(call.id.clone(), e.to_string()),
+                }
+            }
             "image_list" => {
                 let doc_id = call
                     .args
