@@ -172,3 +172,91 @@ SENESCHAL_EMBEDDINGS__MODEL=qwen3-embedding:8b
 - **Streaming**: SSE (Server-Sent Events) for chat responses
 - **Database**: SQLite with vector embeddings as BLOB
 - **PDF processing**: `pdfium-render` for text + `poppler-rs` for image layer compositing
+
+## Module Organization
+
+### When to Split a Module
+
+Split a module when:
+- **Line count exceeds 600 lines** - The file becomes unwieldy to navigate and understand
+- **Multiple distinct responsibilities** - The module handles several unrelated concerns
+- **Frequent merge conflicts** - Multiple features regularly touch the same file
+- **Difficult to name** - If the module name is vague (e.g., "utils", "helpers"), it likely needs splitting
+
+### How to Split a Module
+
+1. **Identify cohesive sub-domains** - Group related functions, types, and impls
+2. **Create a subdirectory with the same name** - Use the file-as-module pattern: `foo.rs` becomes `foo.rs` + `foo/` directory
+3. **Move code to new files** - Each sub-module should have a single clear responsibility
+4. **Keep the parent file as coordinator** - The original `foo.rs` declares submodules and re-exports the public API
+5. **Update imports** - Fix any broken references
+
+**File-as-module pattern** (preferred over `mod.rs`):
+
+Here is a concrete example splitting a CRUD operations module by document type:
+
+```
+# Before (single large file)
+src/tools/fvtt_crud.rs    # 1700+ lines handling actors, items, journals, scenes, tables, folders
+
+# After (file + subdirectory)
+src/tools/fvtt_crud.rs    # Declares submodules, re-exports public API
+src/tools/fvtt_crud/
+  ├── actor.rs            # CreateActor, UpdateActor, DeleteActor
+  ├── item.rs             # Item CRUD + AddActorItem, RemoveActorItem
+  ├── journal.rs          # Journal + JournalPage operations
+  ├── scene.rs            # Scene CRUD operations
+  ├── table.rs            # RollableTable CRUD + RollOnTable
+  └── folder.rs           # Folder + Compendium operations
+```
+
+The parent `fvtt_crud.rs` would contain:
+```rust
+mod actor;
+mod item;
+mod journal;
+mod scene;
+mod table;
+mod folder;
+
+// Re-export public items
+pub use actor::{create_actor, update_actor, delete_actor};
+pub use item::{create_item, add_actor_item, remove_actor_item};
+// ... etc
+```
+
+This keeps the domain name (`fvtt_crud`) visible in the file tree, unlike `mod.rs` which hides it.
+
+**Nested splitting** - If a submodule grows too large, apply the same pattern recursively:
+
+```
+# actor.rs grew to 800+ lines, split further by operation
+src/tools/fvtt_crud/actor.rs       # Declares submodules, shared types, re-exports
+src/tools/fvtt_crud/actor/
+  ├── create.rs                    # CreateActor implementation
+  ├── update.rs                    # UpdateActor implementation
+  └── delete.rs                    # DeleteActor implementation
+```
+
+The `actor.rs` coordinator would contain:
+```rust
+mod create;
+mod update;
+mod delete;
+
+// Shared types used across operations
+pub struct ActorData { /* ... */ }
+
+// Re-export the operation functions
+pub use create::create_actor;
+pub use update::update_actor;
+pub use delete::delete_actor;
+```
+
+### Organizational Principles
+
+- **Domain-based organization** - Group by responsibility, not by type (avoid `types.rs`, `utils.rs`, `helpers.rs`)
+- **Never use `mod.rs`** - Use the file-as-module pattern to keep domain names visible in the file tree
+- **Single responsibility** - Each file should have one clear purpose describable in 5 words or less
+- **Co-locate data with behavior** - Types should live alongside the functions that operate on them
+- **Minimize re-exports** - Only re-export what external code actually needs
