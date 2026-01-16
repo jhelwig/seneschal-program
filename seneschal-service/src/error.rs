@@ -134,6 +134,9 @@ pub enum ProcessingError {
 
     #[error("IO error")]
     Io(#[source] std::io::Error),
+
+    #[error("Processing cancelled for document {document_id}")]
+    Cancelled { document_id: String },
 }
 
 /// Embedding errors
@@ -197,6 +200,7 @@ impl ServiceError {
             }
             ServiceError::Processing(ProcessingError::FileTooLarge { .. }) => "file_too_large",
             ServiceError::Processing(ProcessingError::Io(_)) => "io_error",
+            ServiceError::Processing(ProcessingError::Cancelled { .. }) => "processing_cancelled",
             ServiceError::Embedding(_) => "embedding_error",
             ServiceError::InvalidRequest { .. } => "invalid_request",
             ServiceError::Config { .. } => "config_error",

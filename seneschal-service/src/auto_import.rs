@@ -59,7 +59,11 @@ pub fn start_auto_import_worker(service: Arc<SeneschalService>, auto_import_dir:
 }
 
 /// Recursively collect all supported files from a directory, skipping the failed/ directory.
-fn collect_files_recursive(dir: &Path, base_dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+fn collect_files_recursive(
+    dir: &Path,
+    base_dir: &Path,
+    files: &mut Vec<PathBuf>,
+) -> std::io::Result<()> {
     let entries = std::fs::read_dir(dir)?;
 
     for entry in entries.filter_map(|e| e.ok()) {
@@ -232,15 +236,18 @@ enum ProcessResult {
 }
 
 /// Process a single file for import.
-async fn process_file(service: &SeneschalService, file_path: &Path) -> ServiceResult<ProcessResult> {
+async fn process_file(
+    service: &SeneschalService,
+    file_path: &Path,
+) -> ServiceResult<ProcessResult> {
     let filename = file_path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
     // Compute hash for duplicate detection
-    let file_hash =
-        compute_file_hash(file_path).map_err(|e| ServiceError::Processing(ProcessingError::Io(e)))?;
+    let file_hash = compute_file_hash(file_path)
+        .map_err(|e| ServiceError::Processing(ProcessingError::Io(e)))?;
 
     // Check for duplicate
     if let Some(existing_id) = service.db.get_document_by_hash(&file_hash)? {
@@ -263,7 +270,14 @@ async fn process_file(service: &SeneschalService, file_path: &Path) -> ServiceRe
     // - tags: empty (as per requirements)
     // - vision_model: None (no captioning for auto-import)
     let document = service
-        .upload_document(&content, filename, &title, AccessLevel::GmOnly, vec![], None)
+        .upload_document(
+            &content,
+            filename,
+            &title,
+            AccessLevel::GmOnly,
+            vec![],
+            None,
+        )
         .await?;
 
     info!(

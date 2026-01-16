@@ -6,9 +6,10 @@ use tracing::{debug, info, warn};
 
 use crate::config::EmbeddingsConfig;
 use crate::db::{Chunk, Database};
-use crate::error::{EmbeddingError, OllamaError, ServiceError, ServiceResult};
+use crate::error::{EmbeddingError, OllamaError, ProcessingError, ServiceError, ServiceResult};
 use crate::i18n::I18n;
 use crate::tools::{SearchFilters, TagMatch};
+use tokio_util::sync::CancellationToken;
 
 /// Search service for RAG functionality using Ollama embeddings
 pub struct SearchService {
@@ -138,8 +139,11 @@ impl SearchService {
             .collect())
     }
 
-    /// Index multiple chunks with progress callback
-    /// The callback receives (current_progress, total) after each chunk is embedded
+    /// Index multiple chunks with progress callback.
+    /// The callback receives (current_progress, total) after each chunk is embedded.
+    /// Note: Prefer `index_chunks_with_progress_cancellable` for document processing
+    /// to support cancellation on document deletion.
+    #[allow(dead_code)]
     pub async fn index_chunks_with_progress<F>(
         &self,
         chunks: &[Chunk],
@@ -157,6 +161,62 @@ impl SearchService {
 
         // Generate embeddings for all chunks
         for (i, chunk) in chunks.iter().enumerate() {
+            let embedding = self.embed_text(&chunk.content).await?;
+            self.db.insert_embedding(&chunk.id, &embedding)?;
+
+            let progress = i + 1;
+
+            // Call the progress callback
+            on_progress(progress, total);
+
+            // Log progress every 10 chunks or at completion
+            if progress % 10 == 0 || progress == total {
+                info!(
+                    progress = progress,
+                    total = total,
+                    percent = (progress * 100) / total,
+                    "Generating embeddings"
+                );
+            }
+        }
+
+        info!(chunks = total, "Embedding generation complete");
+
+        Ok(())
+    }
+
+    /// Index multiple chunks with progress callback and cancellation support.
+    /// Returns Err(ProcessingError::Cancelled) if the token is cancelled.
+    pub async fn index_chunks_with_progress_cancellable<F>(
+        &self,
+        chunks: &[Chunk],
+        cancel_token: &CancellationToken,
+        mut on_progress: F,
+    ) -> ServiceResult<()>
+    where
+        F: FnMut(usize, usize),
+    {
+        if chunks.is_empty() {
+            return Ok(());
+        }
+
+        let total = chunks.len();
+        info!(total = total, "Starting embedding generation (cancellable)");
+
+        // Generate embeddings for all chunks
+        for (i, chunk) in chunks.iter().enumerate() {
+            // Check for cancellation before each embedding
+            if cancel_token.is_cancelled() {
+                info!(
+                    progress = i,
+                    total = total,
+                    "Embedding generation cancelled"
+                );
+                return Err(ServiceError::Processing(ProcessingError::Cancelled {
+                    document_id: chunk.document_id.clone(),
+                }));
+            }
+
             let embedding = self.embed_text(&chunk.content).await?;
             self.db.insert_embedding(&chunk.id, &embedding)?;
 

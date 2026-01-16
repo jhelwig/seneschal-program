@@ -12,6 +12,7 @@ repository = "https://github.com/jhelwig/seneschal-program"
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1.43", features = ["full"] }
+tokio-util = "0.7"
 
 # Web framework
 axum = { version = "0.8", features = ["macros", "multipart", "ws"] }

@@ -305,12 +305,18 @@ impl OllamaClient {
 
                                     // Handle completion
                                     if response.done {
-                                        let _ = tx
+                                        if tx
                                             .send(StreamEvent::Done {
                                                 prompt_eval_count: response.prompt_eval_count,
                                                 eval_count: response.eval_count,
                                             })
-                                            .await;
+                                            .await
+                                            .is_err()
+                                        {
+                                            debug!(
+                                                "Stream receiver dropped before completion signal"
+                                            );
+                                        }
                                         return;
                                     }
                                 }
@@ -321,7 +327,9 @@ impl OllamaClient {
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(StreamEvent::Error(e.to_string())).await;
+                        if tx.send(StreamEvent::Error(e.to_string())).await.is_err() {
+                            debug!("Stream receiver dropped before error could be sent");
+                        }
                         return;
                     }
                 }
