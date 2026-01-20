@@ -5,6 +5,7 @@
 
 mod documents;
 mod images;
+mod rendering;
 mod system;
 mod traveller_basic;
 mod traveller_map_api;
@@ -48,6 +49,10 @@ impl SeneschalService {
             "image_search" => self.tool_image_search(call, user_context).await,
             "image_get" => self.tool_image_get(call, user_context),
             "image_deliver" => self.tool_image_deliver(call, user_context),
+
+            // Page rendering tools
+            "render_page_region" => self.tool_render_page_region(call, user_context),
+            "render_full_page" => self.tool_render_full_page(call, user_context),
 
             // System tools
             "system_schema" => self.tool_system_schema(call),

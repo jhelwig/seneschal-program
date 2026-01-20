@@ -368,9 +368,9 @@ pub fn extract_pdf_images(
             .iter()
             .filter(|r| r.image_type == ImageType::Background)
             .count(),
-        region_renders = results
+        renders = results
             .iter()
-            .filter(|r| r.image_type == ImageType::RegionRender)
+            .filter(|r| r.image_type == ImageType::Render)
             .count(),
         "Extracted and saved images from PDF"
     );

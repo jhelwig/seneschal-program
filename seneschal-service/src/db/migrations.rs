@@ -131,6 +131,7 @@ pub(super) fn run_migrations(conn: &Connection) -> ServiceResult<()> {
     run_fts5_migration(conn)?;
     run_captioning_status_migration(conn)?;
     run_settings_table_migration(conn)?;
+    run_image_type_rename_migration(conn)?;
 
     Ok(())
 }
@@ -487,6 +488,19 @@ fn run_settings_table_migration(conn: &Connection) -> ServiceResult<()> {
             message: format!("Failed to create settings table: {}", e),
         })?;
     }
+
+    Ok(())
+}
+
+/// Migration: Rename image_type 'region_render' to 'render'
+fn run_image_type_rename_migration(conn: &Connection) -> ServiceResult<()> {
+    conn.execute(
+        "UPDATE document_images SET image_type = 'render' WHERE image_type = 'region_render'",
+        [],
+    )
+    .map_err(|e| DatabaseError::Migration {
+        message: format!("Failed to rename region_render to render: {}", e),
+    })?;
 
     Ok(())
 }

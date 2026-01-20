@@ -294,8 +294,8 @@ pub enum ImageType {
     Individual,
     /// Background image (appears on multiple pages, extracted once)
     Background,
-    /// Rendered page region for overlapping content
-    RegionRender,
+    /// Rendered content (full page or region)
+    Render,
 }
 
 impl ImageType {
@@ -303,14 +303,14 @@ impl ImageType {
         match self {
             ImageType::Individual => "individual",
             ImageType::Background => "background",
-            ImageType::RegionRender => "region_render",
+            ImageType::Render => "render",
         }
     }
 
     pub fn from_str(s: &str) -> Self {
         match s {
             "background" => ImageType::Background,
-            "region_render" => ImageType::RegionRender,
+            "render" | "region_render" => ImageType::Render,
             _ => ImageType::Individual,
         }
     }

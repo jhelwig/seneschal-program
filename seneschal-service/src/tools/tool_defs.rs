@@ -8,6 +8,7 @@ mod fvtt_crud;
 mod fvtt_system;
 mod image;
 mod mcp;
+mod rendering;
 mod traveller;
 mod traveller_map;
 mod traveller_worlds;
@@ -20,6 +21,7 @@ use super::registry::{ToolMetadata, ToolName};
 pub fn register_all_tools(registry: &mut HashMap<ToolName, ToolMetadata>) {
     document::register(registry);
     image::register(registry);
+    rendering::register(registry);
     traveller::register(registry);
     traveller_map::register(registry);
     traveller_worlds::register(registry);

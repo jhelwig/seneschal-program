@@ -182,7 +182,7 @@ pub fn save_group_region_render(
         height: Some(height),
         description: None,
         source_pages: Some(vec![page_number]),
-        image_type: ImageType::RegionRender,
+        image_type: ImageType::Render,
         source_image_id: source_image_id.map(String::from),
         has_region_render: false,
         created_at,

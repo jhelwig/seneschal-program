@@ -42,6 +42,12 @@ pub enum ToolName {
     ImageDeliver,
 
     // ==========================================
+    // Page rendering tools (Internal)
+    // ==========================================
+    RenderPageRegion,
+    RenderFullPage,
+
+    // ==========================================
     // Traveller tools (Internal)
     // ==========================================
     TravellerUwpParse,

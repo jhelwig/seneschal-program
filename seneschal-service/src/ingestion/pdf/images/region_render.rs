@@ -134,7 +134,6 @@ pub fn render_page_region(
 /// Render a full page at the given DPI.
 ///
 /// This is useful for debugging or when you need the entire page.
-#[allow(dead_code)]
 pub fn render_full_page(
     pdfium: &Pdfium,
     pdf_path: &Path,
