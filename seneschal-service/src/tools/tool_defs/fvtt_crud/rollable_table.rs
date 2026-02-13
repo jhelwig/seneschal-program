@@ -26,7 +26,6 @@ fn create_rollable_table() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::CreateRollableTable,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Create a Foundry VTT rollable table for random encounters, loot, events, etc. Can create in world or compendium. Results can be text, document links, or compendium references.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -61,7 +60,7 @@ fn create_rollable_table() -> ToolMetadata {
                     },
                     "folder": {
                         "type": "string",
-                        "description": "Name of folder to place the table in"
+                        "description": "Folder name or ID to place the table in"
                     },
                     "pack_id": {
                         "type": "string",
@@ -78,7 +77,6 @@ fn get_rollable_table() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::GetRollableTable,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Get a Foundry VTT rollable table by ID. Returns the table's formula and all results. Can read from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -107,7 +105,6 @@ fn update_rollable_table() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::UpdateRollableTable,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Update an existing Foundry VTT rollable table. Can modify name, formula, or results. Works with world or compendium (if unlocked). Results can be text, document links, or compendium references.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -155,7 +152,6 @@ fn delete_rollable_table() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::DeleteRollableTable,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Delete a Foundry VTT rollable table permanently. Works with world or compendium (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -184,7 +180,6 @@ fn list_rollable_tables() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::ListRollableTables,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "List rollable tables in Foundry VTT. Can filter by name pattern. Lists from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -200,7 +195,7 @@ fn list_rollable_tables() -> ToolMetadata {
                     },
                     "folder": {
                         "type": "string",
-                        "description": "Filter by folder name"
+                        "description": "Filter by folder name or ID"
                     },
                     "limit": {
                         "type": "integer",

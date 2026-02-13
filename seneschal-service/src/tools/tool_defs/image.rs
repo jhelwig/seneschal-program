@@ -18,7 +18,6 @@ fn image_list() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::ImageList,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "List images from a document. Use document_find first to get the document ID, then use this to browse images from specific pages or page ranges.",
         mcp_suffix: None,
@@ -55,7 +54,6 @@ fn image_search() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::ImageSearch,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Search for images by description using semantic similarity. Good for finding maps, portraits, deck plans, etc.",
         mcp_suffix: None,
@@ -88,7 +86,6 @@ fn image_get() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::ImageGet,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Get detailed information about a specific image by its ID.",
         mcp_suffix: None,
@@ -113,7 +110,6 @@ fn image_deliver() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::ImageDeliver,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Copy an image to the Foundry VTT assets directory so it can be used in scenes, actors, etc. Returns the full FVTT path (starting with 'assets/') to use in documents.",
         mcp_suffix: None,

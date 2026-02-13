@@ -25,7 +25,6 @@ fn document_search() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::DocumentSearch,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Search game documents (rulebooks, scenarios) for information using semantic similarity. Good for conceptual queries like 'how do jump drives work' or 'rules for combat'. Returns relevant text chunks.",
         mcp_suffix: None,
@@ -59,7 +58,6 @@ fn document_search_text() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::DocumentSearchText,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Search documents using exact keyword matching. Use this for specific names, terms, or when semantic search doesn't find what you need. Supports filtering by section (e.g., 'Adventure 1'). Good for finding specific characters like 'Anders Casarii' or references within a particular section.",
         mcp_suffix: None,
@@ -96,7 +94,6 @@ fn document_get() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::DocumentGet,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Get document metadata or retrieve the full text content of a specific page. Use 'page' parameter to read page content - this is the primary way to read specific pages from rulebooks and scenarios.",
         mcp_suffix: None,
@@ -125,7 +122,6 @@ fn document_list() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::DocumentList,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "List all available documents (rulebooks, scenarios) with their IDs and titles.",
         mcp_suffix: None,
@@ -150,7 +146,6 @@ fn document_find() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::DocumentFind,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Find documents by title (case-insensitive partial match). Returns document IDs and metadata.",
         mcp_suffix: None,
@@ -175,7 +170,6 @@ fn document_update() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::DocumentUpdate,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Update document metadata (title, access level, and/or tags). Use document_list or document_find to get document IDs first. Tags are replaced entirely - provide all desired tags.",
         mcp_suffix: None,

@@ -79,42 +79,8 @@ pub struct AgenticLoopConfig {
 }
 
 impl AgenticLoopConfig {
-    pub fn time_pause_threshold(&self) -> Duration {
-        Duration::from_secs(self.time_pause_threshold_secs)
-    }
-
-    pub fn hard_timeout(&self) -> Duration {
-        Duration::from_secs(self.hard_timeout_secs)
-    }
-
     pub fn external_tool_timeout(&self) -> Duration {
         Duration::from_secs(self.external_tool_timeout_secs)
-    }
-}
-
-/// Conversation storage configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConversationConfig {
-    /// How long to keep conversations before cleanup in seconds
-    #[serde(default = "super::defaults::default_conversation_ttl_secs")]
-    pub ttl_secs: u64,
-
-    /// Run cleanup every N seconds
-    #[serde(default = "super::defaults::default_cleanup_interval_secs")]
-    pub cleanup_interval_secs: u64,
-
-    /// Maximum conversations per user (0 = unlimited)
-    #[serde(default = "super::defaults::default_max_per_user")]
-    pub max_per_user: u32,
-}
-
-impl ConversationConfig {
-    pub fn ttl(&self) -> Duration {
-        Duration::from_secs(self.ttl_secs)
-    }
-
-    pub fn cleanup_interval(&self) -> Duration {
-        Duration::from_secs(self.cleanup_interval_secs)
     }
 }
 

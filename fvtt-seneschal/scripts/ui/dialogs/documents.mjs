@@ -9,7 +9,7 @@ import { ImageBrowserDialog } from "./images.mjs";
 /**
  * Dialog for managing documents in the Seneschal backend
  */
-export class DocumentManagementDialog extends Application {
+export class DocumentManagementDialog extends FormApplication {
   static get defaultOptions() {
     return foundry.utils.mergeObject(super.defaultOptions, {
       id: "seneschal-documents",
@@ -22,8 +22,8 @@ export class DocumentManagementDialog extends Application {
     });
   }
 
-  constructor(options = {}) {
-    super(options);
+  constructor(object = {}, options = {}) {
+    super(object, options);
     this.backendClient = new BackendClient();
     this.documents = [];
     this.isLoading = false;
@@ -69,6 +69,13 @@ export class DocumentManagementDialog extends Application {
       uploadProgress: this.uploadProgress,
       processingDoc: this.processingDoc,
     };
+  }
+
+  /**
+   * Required by FormApplication - not used since this dialog uses button handlers
+   */
+  async _updateObject(_event, _formData) {
+    // Document management uses button handlers, not form submission
   }
 
   /**
@@ -183,7 +190,11 @@ export class DocumentManagementDialog extends Application {
     const row = this.element.find(`tr[data-document-id="${doc.id}"]`);
     if (!row.length) {
       // Row not found in DOM, fall back to full re-render
-      this.render(false);
+      // But only if we're not in the middle of a re-extract operation
+      // to avoid race conditions with the finally block's render
+      if (!this.processingDoc) {
+        this.render(false);
+      }
       return;
     }
 

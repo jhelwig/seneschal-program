@@ -26,7 +26,6 @@ fn list_compendium_packs() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::ListCompendiumPacks,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "List available compendium packs. Compendiums store reusable documents (actors, items, journals, etc.) outside the world.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -55,7 +54,6 @@ fn browse_compendium_pack() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::BrowseCompendiumPack,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "List documents in a compendium pack. Uses lightweight index for fast browsing without loading full documents.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -96,7 +94,6 @@ fn search_compendium_packs() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::SearchCompendiumPacks,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Search for documents across all compendium packs by name.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -130,7 +127,6 @@ fn import_from_compendium() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::ImportFromCompendium,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Import documents from a compendium pack into the world. Creates copies in the world collection.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -172,7 +168,6 @@ fn export_to_compendium() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::ExportToCompendium,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Export documents from the world to a compendium pack. Pack must be unlocked.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),

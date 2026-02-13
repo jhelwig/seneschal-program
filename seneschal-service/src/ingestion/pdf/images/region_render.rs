@@ -131,68 +131,6 @@ pub fn render_page_region(
     Ok(cropped)
 }
 
-/// Render a full page at the given DPI.
-///
-/// This is useful for debugging or when you need the entire page.
-pub fn render_full_page(
-    pdfium: &Pdfium,
-    pdf_path: &Path,
-    page_number: usize,
-    dpi: f64,
-) -> ServiceResult<RgbaImage> {
-    // Load the PDF document
-    let document =
-        pdfium
-            .load_pdf_from_file(pdf_path, None)
-            .map_err(|e| ProcessingError::TextExtraction {
-                page: page_number as u32,
-                source: Box::new(std::io::Error::other(format!(
-                    "Failed to load PDF for full page render: {}",
-                    e
-                ))),
-            })?;
-
-    // Get the page
-    let pages = document.pages();
-    let page = pages
-        .get(page_number as u16)
-        .map_err(|e| ProcessingError::TextExtraction {
-            page: page_number as u32,
-            source: Box::new(std::io::Error::other(format!(
-                "Failed to get page {} for full page render: {}",
-                page_number, e
-            ))),
-        })?;
-
-    // Get page dimensions in points
-    let page_width_pts = page.width().value as f64;
-    let page_height_pts = page.height().value as f64;
-
-    // Calculate pixel dimensions
-    let pixels_per_point = dpi / 72.0;
-    let render_width = (page_width_pts * pixels_per_point).ceil() as i32;
-    let render_height = (page_height_pts * pixels_per_point).ceil() as i32;
-
-    let config = PdfRenderConfig::new()
-        .set_target_width(render_width)
-        .set_target_height(render_height);
-
-    // Render the page
-    let bitmap = page
-        .render_with_config(&config)
-        .map_err(|e| ProcessingError::TextExtraction {
-            page: page_number as u32,
-            source: Box::new(std::io::Error::other(format!(
-                "Failed to render full page: {}",
-                e
-            ))),
-        })?;
-
-    // Use pdfium-render's built-in conversion which handles color format correctly
-    let image: DynamicImage = bitmap.as_image();
-    Ok(image.to_rgba8())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

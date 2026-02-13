@@ -45,7 +45,6 @@ pub enum ToolName {
     // Page rendering tools (Internal)
     // ==========================================
     RenderPageRegion,
-    RenderFullPage,
 
     // ==========================================
     // Traveller tools (Internal)
@@ -118,6 +117,7 @@ pub enum ToolName {
     // ==========================================
     CreateActor,
     GetActor,
+    GetActors,
     UpdateActor,
     DeleteActor,
     ListActors,
@@ -136,6 +136,7 @@ pub enum ToolName {
     // ==========================================
     CreateItem,
     GetItem,
+    GetItems,
     UpdateItem,
     DeleteItem,
     ListItems,
@@ -145,6 +146,7 @@ pub enum ToolName {
     // ==========================================
     CreateJournal,
     GetJournal,
+    GetJournals,
     UpdateJournal,
     DeleteJournal,
     ListJournals,
@@ -153,6 +155,8 @@ pub enum ToolName {
     // Journal Page CRUD (External)
     // ==========================================
     AddJournalPage,
+    GetJournalPage,
+    GetJournalPages,
     UpdateJournalPage,
     DeleteJournalPage,
     ListJournalPages,
@@ -200,13 +204,10 @@ pub struct ToolMetadata {
     /// Where the tool executes (backend or FVTT client)
     pub location: ToolLocation,
 
-    /// Whether to expose via Ollama (agentic loop)
-    pub ollama_enabled: bool,
-
     /// Whether to expose via MCP server
     pub mcp_enabled: bool,
 
-    /// Tool description (shared between Ollama and MCP)
+    /// Tool description
     pub description: &'static str,
 
     /// Optional suffix for MCP description (e.g., "Requires GM WebSocket connection")
@@ -251,22 +252,6 @@ impl ToolRegistry {
         super::tool_defs::register_all_tools(&mut tools);
 
         Self { tools }
-    }
-
-    /// Get all tools as Ollama tool definitions
-    pub fn ollama_definitions(&self) -> Vec<super::OllamaToolDefinition> {
-        self.tools
-            .values()
-            .filter(|t| t.ollama_enabled)
-            .map(|t| super::OllamaToolDefinition {
-                tool_type: "function".to_string(),
-                function: super::OllamaFunctionDefinition {
-                    name: t.name.to_string(),
-                    description: t.description.to_string(),
-                    parameters: (t.parameters)(),
-                },
-            })
-            .collect()
     }
 
     /// Get all tools as MCP tool definitions

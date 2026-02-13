@@ -10,13 +10,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 pub use schemas::{
-    AgenticLoopConfig, ConversationConfig, EmbeddingsConfig, ImageExtractionConfig, LimitsConfig,
-    McpConfig, OllamaConfig, TravellerMapConfig, TravellerWorldsConfig,
+    AgenticLoopConfig, EmbeddingsConfig, ImageExtractionConfig, LimitsConfig, McpConfig,
+    OllamaConfig, TravellerMapConfig, TravellerWorldsConfig,
 };
 
 use defaults::{
-    default_agentic_loop, default_conversation, default_embeddings, default_image_extraction,
-    default_limits, default_mcp, default_ollama, default_traveller_map, default_traveller_worlds,
+    default_agentic_loop, default_embeddings, default_image_extraction, default_limits,
+    default_mcp, default_ollama, default_traveller_map, default_traveller_worlds,
 };
 
 /// Dynamic configuration that can be updated at runtime via API
@@ -37,9 +37,6 @@ pub struct DynamicConfig {
 
     #[serde(default = "default_agentic_loop")]
     pub agentic_loop: AgenticLoopConfig,
-
-    #[serde(default = "default_conversation")]
-    pub conversation: ConversationConfig,
 
     #[serde(default = "default_image_extraction")]
     pub image_extraction: ImageExtractionConfig,

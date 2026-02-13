@@ -1,8 +1,8 @@
 //! Default value functions for DynamicConfig.
 
 use super::schemas::{
-    AgenticLoopConfig, ConversationConfig, EmbeddingsConfig, ImageExtractionConfig, LimitsConfig,
-    McpConfig, OllamaConfig, TravellerMapConfig, TravellerWorldsConfig,
+    AgenticLoopConfig, EmbeddingsConfig, ImageExtractionConfig, LimitsConfig, McpConfig,
+    OllamaConfig, TravellerMapConfig, TravellerWorldsConfig,
 };
 
 // ==================== Top-level Section Defaults ====================
@@ -44,14 +44,6 @@ pub(crate) fn default_agentic_loop() -> AgenticLoopConfig {
         time_pause_threshold_secs: default_time_pause_threshold_secs(),
         hard_timeout_secs: default_hard_timeout_secs(),
         external_tool_timeout_secs: default_external_tool_timeout_secs(),
-    }
-}
-
-pub(crate) fn default_conversation() -> ConversationConfig {
-    ConversationConfig {
-        ttl_secs: default_conversation_ttl_secs(),
-        cleanup_interval_secs: default_cleanup_interval_secs(),
-        max_per_user: default_max_per_user(),
     }
 }
 
@@ -135,20 +127,6 @@ pub(crate) fn default_hard_timeout_secs() -> u64 {
 
 pub(crate) fn default_external_tool_timeout_secs() -> u64 {
     30
-}
-
-// ==================== Conversation Defaults ====================
-
-pub(crate) fn default_conversation_ttl_secs() -> u64 {
-    7 * 24 * 60 * 60 // 7 days
-}
-
-pub(crate) fn default_cleanup_interval_secs() -> u64 {
-    24 * 60 * 60 // 24 hours
-}
-
-pub(crate) fn default_max_per_user() -> u32 {
-    100
 }
 
 // ==================== Image Extraction Defaults ====================

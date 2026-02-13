@@ -26,7 +26,6 @@ fn create_scene() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::CreateScene,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Create a Foundry VTT scene with a background image. Use image_deliver first to get the image path. Can create in world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -58,7 +57,7 @@ fn create_scene() -> ToolMetadata {
                     },
                     "folder": {
                         "type": "string",
-                        "description": "Name of folder to place the scene in"
+                        "description": "Folder name or ID to place the scene in"
                     },
                     "pack_id": {
                         "type": "string",
@@ -75,7 +74,6 @@ fn get_scene() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::GetScene,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Get a Foundry VTT scene by ID. Returns the scene's configuration. Can read from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -104,7 +102,6 @@ fn update_scene() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::UpdateScene,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Update an existing Foundry VTT scene. Can modify name, background, dimensions, grid settings, etc. Works with world or compendium (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -161,7 +158,6 @@ fn delete_scene() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::DeleteScene,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Delete a Foundry VTT scene permanently. Works with world or compendium (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -190,7 +186,6 @@ fn list_scenes() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::ListScenes,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "List scenes in Foundry VTT. Can filter by name pattern. Lists from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -206,7 +201,7 @@ fn list_scenes() -> ToolMetadata {
                     },
                     "folder": {
                         "type": "string",
-                        "description": "Filter by folder name"
+                        "description": "Filter by folder name or ID"
                     },
                     "active": {
                         "type": "boolean",

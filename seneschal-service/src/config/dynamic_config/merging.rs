@@ -79,20 +79,6 @@ impl DynamicConfig {
             serde_json::json!(self.agentic_loop.external_tool_timeout_secs),
         );
 
-        // Conversation settings
-        map.insert(
-            "conversation.ttl_secs".to_string(),
-            serde_json::json!(self.conversation.ttl_secs),
-        );
-        map.insert(
-            "conversation.cleanup_interval_secs".to_string(),
-            serde_json::json!(self.conversation.cleanup_interval_secs),
-        );
-        map.insert(
-            "conversation.max_per_user".to_string(),
-            serde_json::json!(self.conversation.max_per_user),
-        );
-
         // Image extraction settings
         map.insert(
             "image_extraction.background_area_threshold".to_string(),
@@ -225,23 +211,6 @@ impl DynamicConfig {
             "agentic_loop.external_tool_timeout_secs" => {
                 if let Some(v) = value.as_u64() {
                     self.agentic_loop.external_tool_timeout_secs = v;
-                }
-            }
-
-            // Conversation settings
-            "conversation.ttl_secs" => {
-                if let Some(v) = value.as_u64() {
-                    self.conversation.ttl_secs = v;
-                }
-            }
-            "conversation.cleanup_interval_secs" => {
-                if let Some(v) = value.as_u64() {
-                    self.conversation.cleanup_interval_secs = v;
-                }
-            }
-            "conversation.max_per_user" => {
-                if let Some(v) = value.as_u64() {
-                    self.conversation.max_per_user = v as u32;
                 }
             }
 

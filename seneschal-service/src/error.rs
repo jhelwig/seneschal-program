@@ -44,9 +44,6 @@ pub enum ServiceError {
     #[error("Image not found: {image_id}")]
     ImageNotFound { image_id: String },
 
-    #[error("Conversation not found: {conversation_id}")]
-    ConversationNotFound { conversation_id: String },
-
     #[allow(dead_code)]
     #[error("Tool call not found: {tool_call_id}")]
     ToolCallNotFound { tool_call_id: String },
@@ -166,7 +163,6 @@ impl ServiceError {
         match self {
             ServiceError::DocumentNotFound { .. }
             | ServiceError::ImageNotFound { .. }
-            | ServiceError::ConversationNotFound { .. }
             | ServiceError::ToolCallNotFound { .. } => StatusCode::NOT_FOUND,
             ServiceError::InvalidRequest { .. } => StatusCode::BAD_REQUEST,
             ServiceError::Ollama(OllamaError::ModelNotFound { .. }) => StatusCode::NOT_FOUND,
@@ -184,7 +180,6 @@ impl ServiceError {
         match self {
             ServiceError::DocumentNotFound { .. } => "document_not_found",
             ServiceError::ImageNotFound { .. } => "image_not_found",
-            ServiceError::ConversationNotFound { .. } => "conversation_not_found",
             ServiceError::ToolCallNotFound { .. } => "tool_call_not_found",
             ServiceError::Ollama(OllamaError::Connection { .. }) => "ollama_connection",
             ServiceError::Ollama(OllamaError::ModelNotFound { .. }) => "ollama_model_not_found",
@@ -214,11 +209,6 @@ impl ServiceError {
             ServiceError::DocumentNotFound { document_id } => {
                 i18n.format(locale, "error-document-not-found", &[("id", document_id)])
             }
-            ServiceError::ConversationNotFound { conversation_id } => i18n.format(
-                locale,
-                "error-conversation-not-found",
-                &[("id", conversation_id)],
-            ),
             ServiceError::Internal { .. } => i18n.get(locale, "error-internal", None),
             // For other errors, fall back to the technical message
             _ => self.to_string(),

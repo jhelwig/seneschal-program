@@ -185,57 +185,6 @@ async fn handle_client_message(
             ws_manager.set_document_subscription(session_id, false);
             debug!(session_id = %session_id, "Unsubscribed from document updates");
         }
-        ClientMessage::ChatMessage {
-            conversation_id,
-            message,
-            model,
-            enabled_tools,
-        } => {
-            // Check if connection is authenticated
-            let conn_info = ws_manager.get_connection_info(session_id);
-            let Some((user_id, user_name, role)) = conn_info else {
-                ws_manager.send_to(
-                    session_id,
-                    ServerMessage::ChatError {
-                        conversation_id: conversation_id.unwrap_or_default(),
-                        message: "Not authenticated".to_string(),
-                        recoverable: false,
-                    },
-                );
-                return;
-            };
-
-            debug!(
-                session_id = %session_id,
-                user_id = %user_id,
-                conversation_id = ?conversation_id,
-                message_preview = %message.chars().take(100).collect::<String>(),
-                "Starting WebSocket chat"
-            );
-
-            // Start the chat via service
-            let conv_id = service
-                .start_chat_ws(
-                    session_id.to_string(),
-                    conversation_id,
-                    message,
-                    model,
-                    enabled_tools,
-                    user_id,
-                    user_name,
-                    role,
-                    ws_manager.clone(),
-                )
-                .await;
-
-            // Send started acknowledgment
-            ws_manager.send_to(
-                session_id,
-                ServerMessage::ChatStarted {
-                    conversation_id: conv_id,
-                },
-            );
-        }
         ClientMessage::ToolResult {
             conversation_id,
             tool_call_id,
@@ -248,36 +197,12 @@ async fn handle_client_message(
                 "Received tool result via WebSocket"
             );
 
-            // Route based on conversation_id prefix
+            // Route to MCP handler (all tool results are now MCP-based)
             if conversation_id.starts_with("mcp:") {
-                // MCP tool result - route to MCP handler
                 service
                     .handle_mcp_tool_result(&conversation_id, &tool_call_id, result)
                     .await;
-            } else {
-                // Regular WebSocket chat tool result
-                service
-                    .handle_tool_result_ws(&conversation_id, &tool_call_id, result)
-                    .await;
             }
-        }
-        ClientMessage::ContinueChat { conversation_id } => {
-            debug!(
-                session_id = %session_id,
-                conversation_id = %conversation_id,
-                "Continuing paused chat"
-            );
-
-            service.continue_chat_ws(&conversation_id).await;
-        }
-        ClientMessage::CancelChat { conversation_id } => {
-            debug!(
-                session_id = %session_id,
-                conversation_id = %conversation_id,
-                "Cancelling chat"
-            );
-
-            service.cancel_chat_ws(&conversation_id).await;
         }
     }
 }
@@ -317,25 +242,7 @@ mod tests {
         let msg: ClientMessage = serde_json::from_str(unsub_json).unwrap();
         assert!(matches!(msg, ClientMessage::UnsubscribeDocuments));
 
-        // Chat messages
-        let chat_json = r#"{"type":"chat_message","conversation_id":null,"message":"Hello","model":"llama3.2","enabled_tools":["search"]}"#;
-        let msg: ClientMessage = serde_json::from_str(chat_json).unwrap();
-        match msg {
-            ClientMessage::ChatMessage {
-                conversation_id,
-                message,
-                model,
-                enabled_tools,
-            } => {
-                assert!(conversation_id.is_none());
-                assert_eq!(message, "Hello");
-                assert_eq!(model, Some("llama3.2".to_string()));
-                assert_eq!(enabled_tools, Some(vec!["search".to_string()]));
-            }
-            _ => panic!("Expected ChatMessage"),
-        }
-
-        let tool_result_json = r#"{"type":"tool_result","conversation_id":"conv123","tool_call_id":"tc_0","result":{"success":true}}"#;
+        let tool_result_json = r#"{"type":"tool_result","conversation_id":"mcp:123","tool_call_id":"tc_0","result":{"success":true}}"#;
         let msg: ClientMessage = serde_json::from_str(tool_result_json).unwrap();
         match msg {
             ClientMessage::ToolResult {
@@ -343,30 +250,12 @@ mod tests {
                 tool_call_id,
                 result,
             } => {
-                assert_eq!(conversation_id, "conv123");
+                assert_eq!(conversation_id, "mcp:123");
                 assert_eq!(tool_call_id, "tc_0");
                 assert_eq!(result["success"], true);
             }
             _ => panic!("Expected ToolResult"),
         }
-
-        let continue_json = r#"{"type":"continue_chat","conversation_id":"conv123"}"#;
-        let msg: ClientMessage = serde_json::from_str(continue_json).unwrap();
-        assert!(matches!(
-            msg,
-            ClientMessage::ContinueChat {
-                conversation_id
-            } if conversation_id == "conv123"
-        ));
-
-        let cancel_json = r#"{"type":"cancel_chat","conversation_id":"conv123"}"#;
-        let msg: ClientMessage = serde_json::from_str(cancel_json).unwrap();
-        assert!(matches!(
-            msg,
-            ClientMessage::CancelChat {
-                conversation_id
-            } if conversation_id == "conv123"
-        ));
     }
 
     #[test]
@@ -397,24 +286,8 @@ mod tests {
         assert!(json.contains(r#""phase":"embedding""#));
         assert!(!json.contains("error")); // should be skipped when None
 
-        // Chat messages
-        let chat_started = ServerMessage::ChatStarted {
-            conversation_id: "conv123".to_string(),
-        };
-        let json = serde_json::to_string(&chat_started).unwrap();
-        assert!(json.contains(r#""type":"chat_started""#));
-        assert!(json.contains(r#""conversation_id":"conv123""#));
-
-        let chat_content = ServerMessage::ChatContent {
-            conversation_id: "conv123".to_string(),
-            text: "Hello world".to_string(),
-        };
-        let json = serde_json::to_string(&chat_content).unwrap();
-        assert!(json.contains(r#""type":"chat_content""#));
-        assert!(json.contains(r#""text":"Hello world""#));
-
         let tool_call = ServerMessage::ChatToolCall {
-            conversation_id: "conv123".to_string(),
+            conversation_id: "mcp:123".to_string(),
             id: "tc_0".to_string(),
             tool: "search".to_string(),
             args: serde_json::json!({"query": "test"}),
@@ -422,24 +295,5 @@ mod tests {
         let json = serde_json::to_string(&tool_call).unwrap();
         assert!(json.contains(r#""type":"chat_tool_call""#));
         assert!(json.contains(r#""tool":"search""#));
-
-        let turn_complete = ServerMessage::ChatTurnComplete {
-            conversation_id: "conv123".to_string(),
-            prompt_tokens: Some(100),
-            completion_tokens: None,
-        };
-        let json = serde_json::to_string(&turn_complete).unwrap();
-        assert!(json.contains(r#""type":"chat_turn_complete""#));
-        assert!(json.contains(r#""prompt_tokens":100"#));
-        assert!(!json.contains("completion_tokens")); // should be skipped when None
-
-        let chat_error = ServerMessage::ChatError {
-            conversation_id: "conv123".to_string(),
-            message: "Something went wrong".to_string(),
-            recoverable: false,
-        };
-        let json = serde_json::to_string(&chat_error).unwrap();
-        assert!(json.contains(r#""type":"chat_error""#));
-        assert!(json.contains(r#""recoverable":false"#));
     }
 }

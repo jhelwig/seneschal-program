@@ -103,6 +103,9 @@ export class ToolExecutor {
       case "get_actor":
         return FvttApiWrapper.getDocument("actor", args.actor_id, args.pack_id, userContext);
 
+      case "get_actors":
+        return FvttApiWrapper.getActors(args, userContext);
+
       case "update_actor":
         return FvttApiWrapper.updateActor(args, userContext);
 
@@ -135,6 +138,9 @@ export class ToolExecutor {
       case "get_item":
         return FvttApiWrapper.getDocument("item", args.item_id, args.pack_id, userContext);
 
+      case "get_items":
+        return FvttApiWrapper.getItems(args, userContext);
+
       case "update_item":
         return FvttApiWrapper.updateItem(args, userContext);
 
@@ -149,12 +155,10 @@ export class ToolExecutor {
         return FvttApiWrapper.createJournalEntry(args, userContext);
 
       case "get_journal":
-        return FvttApiWrapper.getDocument(
-          "journal_entry",
-          args.journal_id,
-          args.pack_id,
-          userContext
-        );
+        return FvttApiWrapper.getJournalDocument(args.journal_id, args.pack_id, userContext);
+
+      case "get_journals":
+        return FvttApiWrapper.getJournals(args, userContext);
 
       case "update_journal":
         return FvttApiWrapper.updateJournalEntry(args, userContext);
@@ -173,6 +177,12 @@ export class ToolExecutor {
       // Journal Page CRUD
       case "add_journal_page":
         return FvttApiWrapper.addJournalPage(args, userContext);
+
+      case "get_journal_page":
+        return FvttApiWrapper.getJournalPage(args, userContext);
+
+      case "get_journal_pages":
+        return FvttApiWrapper.getJournalPages(args, userContext);
 
       case "update_journal_page":
         return FvttApiWrapper.updateJournalPage(args, userContext);

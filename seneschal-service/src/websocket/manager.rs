@@ -88,21 +88,6 @@ impl WebSocketManager {
         }
     }
 
-    /// Get connection info for a session
-    pub fn get_connection_info(&self, session_id: &str) -> Option<(String, Option<String>, u8)> {
-        self.connections.get(session_id).and_then(|conn| {
-            if conn.authenticated {
-                Some((
-                    conn.user_id.clone().unwrap_or_default(),
-                    conn.user_name.clone(),
-                    conn.user_role.unwrap_or(1),
-                ))
-            } else {
-                None
-            }
-        })
-    }
-
     /// Set document subscription status for a connection
     pub(crate) fn set_document_subscription(&self, session_id: &str, subscribed: bool) {
         if let Some(mut conn) = self.connections.get_mut(session_id) {

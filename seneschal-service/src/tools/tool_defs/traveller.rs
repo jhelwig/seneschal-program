@@ -22,7 +22,6 @@ fn traveller_uwp_parse() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerUwpParse,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Parse a Traveller UWP (Universal World Profile) string into detailed world data.",
         mcp_suffix: None,
@@ -47,7 +46,6 @@ fn traveller_jump_calc() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerJumpCalc,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Calculate jump drive fuel requirements and time.",
         mcp_suffix: None,
@@ -80,7 +78,6 @@ fn traveller_skill_lookup() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerSkillLookup,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Look up a Traveller skill's description, characteristic, and specialities.",
         mcp_suffix: None,

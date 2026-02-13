@@ -39,7 +39,7 @@ impl SeneschalService {
             }
         };
 
-        // Extract vision model from metadata
+        // Extract vision model from metadata, falling back to runtime config
         let vision_model = match document
             .metadata
             .as_ref()
@@ -48,23 +48,24 @@ impl SeneschalService {
         {
             Some(model) => model.to_string(),
             None => {
-                error!(doc_id = %doc_id, "Document has no vision model specified");
-                if let Err(e) = self.db.update_captioning_status(
-                    doc_id,
-                    CaptioningStatus::Failed,
-                    Some("No vision model specified"),
-                ) {
-                    warn!(doc_id = %doc_id, error = %e, "Failed to update captioning status to failed");
+                // Fall back to runtime config
+                let config = self.runtime_config.dynamic();
+                let model = &config.ollama.vision_model;
+                if model.is_empty() {
+                    info!(doc_id = %doc_id, "No vision model configured, skipping captioning");
+                    // Mark as completed (no captioning needed) instead of failed
+                    if let Err(e) = self.db.update_captioning_status(
+                        doc_id,
+                        CaptioningStatus::Completed,
+                        None,
+                    ) {
+                        warn!(doc_id = %doc_id, error = %e, "Failed to update captioning status");
+                    }
+                    self.broadcast_captioning_progress(doc_id, "completed", None, None, None);
+                    self.unregister_processing_token(doc_id);
+                    return;
                 }
-                self.broadcast_captioning_progress(
-                    doc_id,
-                    "failed",
-                    None,
-                    None,
-                    Some("No vision model specified"),
-                );
-                self.unregister_processing_token(doc_id);
-                return;
+                model.clone()
             }
         };
 

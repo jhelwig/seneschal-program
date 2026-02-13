@@ -76,6 +76,120 @@ export class FvttApiWrapper {
   }
 
   /**
+   * Get a journal document with page metadata only (no page content).
+   * This reduces response size for journals with many/large pages.
+   * @param {string} journalId - The journal's document ID
+   * @param {string} [packId] - Compendium pack ID (optional)
+   * @param {Object} userContext
+   * @returns {Promise<Object>}
+   */
+  static async getJournalDocument(journalId, packId, userContext) {
+    if (userContext.role < CONST.USER_ROLES.GAMEMASTER) {
+      return { error: "Only GMs can read journals" };
+    }
+
+    try {
+      let journal;
+      if (packId) {
+        const pack = this._getCompendiumPack(packId);
+        if (!pack) return { error: `Pack not found: ${packId}` };
+        journal = await pack.getDocument(journalId);
+      } else {
+        journal = game.journal.get(journalId);
+      }
+
+      if (!journal) return { error: "Journal not found" };
+
+      // Get the full journal object
+      const journalObj = journal.toObject();
+
+      // Replace pages array with metadata-only version (strip content)
+      journalObj.pages = journal.pages.map((p) => ({
+        _id: p.id,
+        name: p.name,
+        type: p.type,
+        sort: p.sort,
+        // Include image src for image pages, but NOT text content
+        ...(p.type === "image" ? { src: p.src } : {}),
+      }));
+
+      return journalObj;
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  /**
+   * Get multiple journals by ID in one call.
+   * Returns journal metadata and page list (without page content) for each.
+   * @param {Object} args - Get arguments
+   * @param {string[]} args.journal_ids - Array of journal IDs to retrieve (max 20)
+   * @param {string} [args.pack_id] - Compendium pack ID (optional)
+   * @param {Object} userContext
+   * @returns {Promise<Object>}
+   */
+  static async getJournals(args, userContext) {
+    if (userContext.role < CONST.USER_ROLES.GAMEMASTER) {
+      return { error: "Only GMs can read journals" };
+    }
+
+    const MAX_DOCS = 20;
+    const ids = args.journal_ids?.slice(0, MAX_DOCS) || [];
+    if (ids.length === 0) {
+      return { error: "journal_ids array is required and must not be empty" };
+    }
+
+    try {
+      const journals = [];
+      const notFound = [];
+
+      if (args.pack_id) {
+        const pack = this._getCompendiumPack(args.pack_id);
+        if (!pack) return { error: `Pack not found: ${args.pack_id}` };
+        for (const id of ids) {
+          const doc = await pack.getDocument(id);
+          if (doc) {
+            // Strip page content
+            const journalObj = doc.toObject();
+            journalObj.pages = doc.pages.map((p) => ({
+              _id: p.id,
+              name: p.name,
+              type: p.type,
+              sort: p.sort,
+              ...(p.type === "image" ? { src: p.src } : {}),
+            }));
+            journals.push(journalObj);
+          } else {
+            notFound.push(id);
+          }
+        }
+      } else {
+        for (const id of ids) {
+          const doc = game.journal.get(id);
+          if (doc) {
+            // Strip page content
+            const journalObj = doc.toObject();
+            journalObj.pages = doc.pages.map((p) => ({
+              _id: p.id,
+              name: p.name,
+              type: p.type,
+              sort: p.sort,
+              ...(p.type === "image" ? { src: p.src } : {}),
+            }));
+            journals.push(journalObj);
+          } else {
+            notFound.push(id);
+          }
+        }
+      }
+
+      return { journals, not_found: notFound.length > 0 ? notFound : undefined };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  /**
    * Delete a FVTT document with pack_id support
    * @param {string} documentType - "actor", "item", "journal", "scene", "rollable_table"
    * @param {string} documentId
@@ -234,8 +348,9 @@ export class FvttApiWrapper {
 
       // Add folder if specified (for world documents)
       if (args.folder && !args.pack_id) {
-        const folderDoc = game.folders.find((f) => f.name === args.folder && f.type === "Scene");
-        if (folderDoc) sceneData.folder = folderDoc.id;
+        const { folderId, error } = this._resolveFolderReference(args.folder, "Scene");
+        if (error) return { error };
+        if (folderId) sceneData.folder = folderId;
       }
 
       const context = args.pack_id ? { pack: args.pack_id } : {};
@@ -506,12 +621,22 @@ export class FvttApiWrapper {
         id: f.id,
         name: f.name,
         parent: f.folder?.name || null,
+        parent_id: f.folder?.id || null,
         depth: f.depth,
         color: f.color,
       }));
 
+      // Filter by parent folder (accepts name or ID)
       if (parentFolder) {
-        result = result.filter((f) => f.parent === parentFolder);
+        const folderType = packId ? null : this._getFolderType(documentType);
+        const pack = packId ? this._getCompendiumPack(packId) : null;
+        const { folderId } = this._resolveFolderReference(parentFolder, folderType, pack);
+        if (folderId) {
+          result = result.filter((f) => f.parent_id === folderId);
+        } else {
+          // Also try matching by name for backwards compatibility
+          result = result.filter((f) => f.parent === parentFolder);
+        }
       }
 
       return { folders: result };
@@ -547,9 +672,11 @@ export class FvttApiWrapper {
         type: folderType,
       };
 
-      if (parentFolder && !packId) {
-        const parent = game.folders.find((f) => f.name === parentFolder && f.type === folderType);
-        if (parent) folderData.folder = parent.id;
+      if (parentFolder) {
+        const pack = packId ? this._getCompendiumPack(packId) : null;
+        const { folderId, error } = this._resolveFolderReference(parentFolder, folderType, pack);
+        if (error) return { error };
+        if (folderId) folderData.folder = folderId;
       }
 
       if (color) folderData.color = color;
@@ -591,15 +718,11 @@ export class FvttApiWrapper {
       const updateData = {};
       if (name !== undefined && name !== null) updateData.name = name;
       if (color !== undefined && color !== null) updateData.color = color;
-      if (parentFolder !== undefined && !packId) {
-        if (parentFolder === null) {
-          updateData.folder = null;
-        } else {
-          const parent = game.folders.find(
-            (f) => f.name === parentFolder && f.type === folder.type
-          );
-          if (parent) updateData.folder = parent.id;
-        }
+      if (parentFolder !== undefined) {
+        const pack = packId ? this._getCompendiumPack(packId) : null;
+        // For folders, the type is the folder's own type (e.g., "Actor" folders have type "Actor")
+        const { error } = this._applyFolderUpdate(updateData, parentFolder, folder.type, pack);
+        if (error) return { error };
       }
 
       await folder.update(updateData);
@@ -667,13 +790,13 @@ export class FvttApiWrapper {
         results = results.filter((doc) => doc.name?.toLowerCase().includes(nameLower));
       }
 
-      // Folder filter
+      // Folder filter (accepts name or ID)
       if (args.folder) {
-        const folder = pack.folders.find((f) => f.name === args.folder);
-        if (folder) {
-          results = results.filter((doc) => doc.folder === folder.id);
-        } else {
+        const { folderId, error } = this._resolveFolderReference(args.folder, null, pack);
+        if (error || !folderId) {
           results = [];
+        } else {
+          results = results.filter((doc) => doc.folder === folderId);
         }
       }
 
@@ -705,15 +828,14 @@ export class FvttApiWrapper {
       results = results.filter((doc) => doc.name?.toLowerCase().includes(nameLower));
     }
 
-    // Folder filter
+    // Folder filter (accepts name or ID)
     if (args.folder) {
-      const folderDoc = game.folders.find(
-        (f) => f.name === args.folder && f.type === this._getFolderType(documentType)
-      );
-      if (folderDoc) {
-        results = results.filter((doc) => doc.folder?.id === folderDoc.id);
-      } else {
+      const folderType = this._getFolderType(documentType);
+      const { folderId, error } = this._resolveFolderReference(args.folder, folderType);
+      if (error || !folderId) {
         results = []; // Folder not found, return empty
+      } else {
+        results = results.filter((doc) => doc.folder?.id === folderId);
       }
     }
 
@@ -756,39 +878,68 @@ export class FvttApiWrapper {
   }
 
   /**
-   * Resolve folder ID from folder name
+   * Resolve a folder reference to a folder ID.
+   * Accepts either a folder name or folder ID.
+   * @param {string|null} folderRef - Folder name or ID
+   * @param {string} folderType - FVTT folder type (e.g., "Actor", "JournalEntry")
+   * @param {CompendiumCollection|null} pack - Optional compendium pack
+   * @returns {{folderId: string|null, error: string|null}}
    * @private
    */
-  static _resolveFolderId(folderName, folderType) {
-    if (!folderName) return null;
-    const folder = game.folders.find((f) => f.name === folderName && f.type === folderType);
-    return folder?.id || null;
+  static _resolveFolderReference(folderRef, folderType, pack = null) {
+    if (folderRef === null || folderRef === undefined || folderRef === "") {
+      return { folderId: null, error: null };
+    }
+
+    const folders = pack ? pack.folders : game.folders.filter((f) => f.type === folderType);
+
+    // FVTT IDs are 16 alphanumeric characters
+    const looksLikeId = /^[a-zA-Z0-9]{16}$/.test(folderRef);
+
+    if (looksLikeId) {
+      const byId = pack ? folders.find((f) => f.id === folderRef) : game.folders.get(folderRef);
+      if (byId && (pack || byId.type === folderType)) {
+        return { folderId: byId.id, error: null };
+      }
+    }
+
+    // Fall back to name lookup
+    const byName = folders.find((f) => f.name === folderRef);
+    if (byName) {
+      return { folderId: byName.id, error: null };
+    }
+
+    return {
+      folderId: null,
+      error: `Folder not found: "${folderRef}". Provide a valid folder name or ID.`,
+    };
   }
 
   /**
    * Apply folder update to updateData object
-   * Handles: undefined (no change), null/empty string (move to root), folder name (move to folder)
+   * Handles: undefined (no change), null/empty string (move to root), folder name/ID (move to folder)
    * @param {Object} updateData - The update data object to modify
    * @param {string|null|undefined} folderValue - The folder value from args
    * @param {string} folderType - The FVTT folder type (e.g., "Actor", "JournalEntry")
+   * @param {CompendiumCollection|null} pack - Optional compendium pack
+   * @returns {{error: string|null}}
    * @private
    */
-  static _applyFolderUpdate(updateData, folderValue, folderType) {
+  static _applyFolderUpdate(updateData, folderValue, folderType, pack = null) {
     if (folderValue === undefined) {
       // Not specified, don't change folder
-      return;
+      return { error: null };
     }
     if (folderValue === null || folderValue === "") {
       // Explicitly set to null/empty - move to root
       updateData.folder = null;
-    } else {
-      // Folder name specified - resolve to ID
-      const folderId = this._resolveFolderId(folderValue, folderType);
-      if (folderId) {
-        updateData.folder = folderId;
-      }
-      // If folder not found, don't change (could add error handling here)
+      return { error: null };
     }
+
+    const { folderId, error } = this._resolveFolderReference(folderValue, folderType, pack);
+    if (error) return { error };
+    updateData.folder = folderId;
+    return { error: null };
   }
 
   /**
@@ -870,8 +1021,9 @@ export class FvttApiWrapper {
         }
       }
 
-      if (!args.pack_id) {
-        const folderId = this._resolveFolderId(args.folder, "Actor");
+      if (!args.pack_id && args.folder) {
+        const { folderId, error } = this._resolveFolderReference(args.folder, "Actor");
+        if (error) return { error };
         if (folderId) actorData.folder = folderId;
       }
 
@@ -944,6 +1096,51 @@ export class FvttApiWrapper {
       }
 
       return { success: true };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  /**
+   * Get multiple actors by ID in one call
+   * @param {Object} args - Get arguments
+   * @param {string[]} args.actor_ids - Array of actor IDs to retrieve (max 20)
+   * @param {string} [args.pack_id] - Compendium pack ID (optional)
+   * @param {Object} userContext
+   * @returns {Promise<Object>}
+   */
+  static async getActors(args, userContext) {
+    if (userContext.role < CONST.USER_ROLES.GAMEMASTER) {
+      return { error: "Only GMs can read actors" };
+    }
+
+    const MAX_DOCS = 20;
+    const ids = args.actor_ids?.slice(0, MAX_DOCS) || [];
+    if (ids.length === 0) {
+      return { error: "actor_ids array is required and must not be empty" };
+    }
+
+    try {
+      const actors = [];
+      const notFound = [];
+
+      if (args.pack_id) {
+        const pack = this._getCompendiumPack(args.pack_id);
+        if (!pack) return { error: `Pack not found: ${args.pack_id}` };
+        for (const id of ids) {
+          const doc = await pack.getDocument(id);
+          if (doc) actors.push(doc.toObject());
+          else notFound.push(id);
+        }
+      } else {
+        for (const id of ids) {
+          const doc = game.actors.get(id);
+          if (doc) actors.push(doc.toObject());
+          else notFound.push(id);
+        }
+      }
+
+      return { actors, not_found: notFound.length > 0 ? notFound : undefined };
     } catch (error) {
       return { error: error.message };
     }
@@ -1161,8 +1358,9 @@ export class FvttApiWrapper {
       if (args.img) itemData.img = args.img;
       if (args.data) itemData.system = args.data;
 
-      if (!args.pack_id) {
-        const folderId = this._resolveFolderId(args.folder, "Item");
+      if (!args.pack_id && args.folder) {
+        const { folderId, error } = this._resolveFolderReference(args.folder, "Item");
+        if (error) return { error };
         if (folderId) itemData.folder = folderId;
       }
 
@@ -1213,6 +1411,51 @@ export class FvttApiWrapper {
   }
 
   /**
+   * Get multiple items by ID in one call
+   * @param {Object} args - Get arguments
+   * @param {string[]} args.item_ids - Array of item IDs to retrieve (max 20)
+   * @param {string} [args.pack_id] - Compendium pack ID (optional)
+   * @param {Object} userContext
+   * @returns {Promise<Object>}
+   */
+  static async getItems(args, userContext) {
+    if (userContext.role < CONST.USER_ROLES.GAMEMASTER) {
+      return { error: "Only GMs can read items" };
+    }
+
+    const MAX_DOCS = 20;
+    const ids = args.item_ids?.slice(0, MAX_DOCS) || [];
+    if (ids.length === 0) {
+      return { error: "item_ids array is required and must not be empty" };
+    }
+
+    try {
+      const items = [];
+      const notFound = [];
+
+      if (args.pack_id) {
+        const pack = this._getCompendiumPack(args.pack_id);
+        if (!pack) return { error: `Pack not found: ${args.pack_id}` };
+        for (const id of ids) {
+          const doc = await pack.getDocument(id);
+          if (doc) items.push(doc.toObject());
+          else notFound.push(id);
+        }
+      } else {
+        for (const id of ids) {
+          const doc = game.items.get(id);
+          if (doc) items.push(doc.toObject());
+          else notFound.push(id);
+        }
+      }
+
+      return { items, not_found: notFound.length > 0 ? notFound : undefined };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  /**
    * Create a journal entry
    * @param {Object} args - Journal creation arguments
    * @param {string} [args.pack_id] - Compendium pack ID (optional)
@@ -1249,8 +1492,9 @@ export class FvttApiWrapper {
         ];
       }
 
-      if (!args.pack_id) {
-        const folderId = this._resolveFolderId(args.folder, "JournalEntry");
+      if (!args.pack_id && args.folder) {
+        const { folderId, error } = this._resolveFolderReference(args.folder, "JournalEntry");
+        if (error) return { error };
         if (folderId) journalData.folder = folderId;
       }
 
@@ -1475,6 +1719,88 @@ export class FvttApiWrapper {
   }
 
   /**
+   * Get a specific page from a journal with full content
+   * @param {Object} args - Get arguments
+   * @param {string} args.journal_id - The journal's document ID
+   * @param {string} args.page_id - The page's document ID
+   * @param {string} [args.pack_id] - Compendium pack ID (optional)
+   * @param {Object} userContext
+   * @returns {Promise<Object>}
+   */
+  static async getJournalPage(args, userContext) {
+    if (userContext.role < CONST.USER_ROLES.GAMEMASTER) {
+      return { error: "Only GMs can read journal pages" };
+    }
+
+    try {
+      let journal;
+      if (args.pack_id) {
+        const pack = this._getCompendiumPack(args.pack_id);
+        if (!pack) return { error: `Pack not found: ${args.pack_id}` };
+        journal = await pack.getDocument(args.journal_id);
+      } else {
+        journal = game.journal.get(args.journal_id);
+      }
+      if (!journal) return { error: "Journal not found" };
+
+      const page = journal.pages.get(args.page_id);
+      if (!page) return { error: "Page not found" };
+
+      return page.toObject();
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  /**
+   * Get multiple pages from a journal with full content
+   * @param {Object} args - Get arguments
+   * @param {string} args.journal_id - The journal's document ID
+   * @param {string[]} args.page_ids - Array of page IDs to retrieve (max 20)
+   * @param {string} [args.pack_id] - Compendium pack ID (optional)
+   * @param {Object} userContext
+   * @returns {Promise<Object>}
+   */
+  static async getJournalPages(args, userContext) {
+    if (userContext.role < CONST.USER_ROLES.GAMEMASTER) {
+      return { error: "Only GMs can read journal pages" };
+    }
+
+    const MAX_PAGES = 20;
+    const pageIds = args.page_ids?.slice(0, MAX_PAGES) || [];
+    if (pageIds.length === 0) {
+      return { error: "page_ids array is required and must not be empty" };
+    }
+
+    try {
+      let journal;
+      if (args.pack_id) {
+        const pack = this._getCompendiumPack(args.pack_id);
+        if (!pack) return { error: `Pack not found: ${args.pack_id}` };
+        journal = await pack.getDocument(args.journal_id);
+      } else {
+        journal = game.journal.get(args.journal_id);
+      }
+      if (!journal) return { error: "Journal not found" };
+
+      const pages = [];
+      const notFound = [];
+      for (const pageId of pageIds) {
+        const page = journal.pages.get(pageId);
+        if (page) {
+          pages.push(page.toObject());
+        } else {
+          notFound.push(pageId);
+        }
+      }
+
+      return { pages, not_found: notFound.length > 0 ? notFound : undefined };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  /**
    * Bulk reorder pages in a journal
    * @param {Object} args - Reorder arguments
    * @param {string} args.journal_id - Journal ID
@@ -1592,8 +1918,9 @@ export class FvttApiWrapper {
         });
       }
 
-      if (!args.pack_id) {
-        const folderId = this._resolveFolderId(args.folder, "RollTable");
+      if (!args.pack_id && args.folder) {
+        const { folderId, error } = this._resolveFolderReference(args.folder, "RollTable");
+        if (error) return { error };
         if (folderId) tableData.folder = folderId;
       }
 

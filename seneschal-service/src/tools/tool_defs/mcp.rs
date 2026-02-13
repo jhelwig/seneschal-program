@@ -21,7 +21,6 @@ fn tool_search() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::ToolSearch,
         location: ToolLocation::Internal,
-        ollama_enabled: false, // MCP-only
         mcp_enabled: true,
         description: "Search for available tools using natural language. Returns tool references for discovered capabilities. Use this to find the right tool for a task.",
         mcp_suffix: None,

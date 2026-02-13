@@ -5,7 +5,6 @@
 //! - Document management
 //! - Image management
 //! - Search functionality
-//! - Conversation management
 //! - WebSocket connections
 
 use axum::{
@@ -27,13 +26,10 @@ use crate::error::{I18nError, ServiceError};
 use crate::service::SeneschalService;
 use crate::websocket::{WebSocketManager, handle_ws_connection};
 
-pub mod conversations;
 pub mod documents;
 pub mod images;
 pub mod search;
 pub mod settings;
-
-use conversations::{get_conversation_handler, list_conversations_handler};
 use documents::{
     delete_document_handler, delete_document_images_handler, get_document_handler,
     list_documents_handler, reextract_document_images_handler, update_document_handler,
@@ -108,9 +104,6 @@ pub fn router(service: Arc<SeneschalService>, runtime_config: &RuntimeConfig) ->
         .route("/images/{id}", delete(delete_image_handler))
         .route("/images/{id}/data", get(get_image_data_handler))
         .route("/images/{id}/deliver", post(deliver_image_handler))
-        // Conversation endpoints
-        .route("/conversations", get(list_conversations_handler))
-        .route("/conversations/{id}", get(get_conversation_handler))
         // Settings endpoints
         .route("/settings", get(get_settings_handler))
         .route("/settings", put(update_settings_handler));

@@ -8,7 +8,7 @@ import { ToolExecutor } from "../tools/index.mjs";
 
 /**
  * WebSocket client for real-time updates from the backend
- * Handles document processing status and other live updates
+ * Handles document processing status and MCP external tool execution
  */
 export class WebSocketClient {
   constructor() {
@@ -21,7 +21,6 @@ export class WebSocketClient {
     this.authenticated = false;
     this.pingInterval = null;
     this.connectionPromise = null;
-    this.chatHandlers = new Map(); // conversation_id -> handlers object
   }
 
   /**
@@ -136,66 +135,9 @@ export class WebSocketClient {
         this._emit("error", msg);
         break;
 
-      // Chat message types
-      case "chat_started": {
-        const handlers = this.chatHandlers.get(msg.conversation_id);
-        if (handlers?.onStarted) handlers.onStarted(msg.conversation_id);
-        break;
-      }
-      case "chat_content": {
-        const handlers = this.chatHandlers.get(msg.conversation_id);
-        if (handlers?.onChunk) handlers.onChunk(msg.text);
-        break;
-      }
+      // MCP external tool call - execute in FVTT and send result back
       case "chat_tool_call": {
-        // Always execute tool calls and send results back
-        // Handlers are notified for UI updates but don't handle execution
-        const handlers = this.chatHandlers.get(msg.conversation_id);
-        this._executeToolCall(msg.conversation_id, msg.id, msg.tool, msg.args, handlers);
-        break;
-      }
-      case "chat_tool_status": {
-        const handlers = this.chatHandlers.get(msg.conversation_id);
-        if (handlers?.onToolStatus) handlers.onToolStatus(msg.message);
-        break;
-      }
-      case "chat_tool_result": {
-        const handlers = this.chatHandlers.get(msg.conversation_id);
-        if (handlers?.onToolStatus) {
-          handlers.onToolStatus(`${msg.tool}: ${msg.summary}`);
-        }
-        break;
-      }
-      case "chat_paused": {
-        const handlers = this.chatHandlers.get(msg.conversation_id);
-        if (handlers?.onPause) {
-          handlers.onPause(msg.reason, msg.tool_calls_made, msg.elapsed_seconds, msg.message);
-        }
-        break;
-      }
-      case "chat_turn_complete": {
-        const handlers = this.chatHandlers.get(msg.conversation_id);
-        if (handlers?.onComplete) {
-          handlers.onComplete({
-            prompt_tokens: msg.prompt_tokens,
-            completion_tokens: msg.completion_tokens,
-          });
-        }
-        // Clean up handlers after completion
-        this.chatHandlers.delete(msg.conversation_id);
-        break;
-      }
-      case "chat_error": {
-        const handlers = this.chatHandlers.get(msg.conversation_id);
-        if (handlers?.onError) {
-          const error = new Error(msg.message);
-          error.recoverable = msg.recoverable ?? false;
-          handlers.onError(error);
-        }
-        // Clean up handlers if not recoverable
-        if (!msg.recoverable) {
-          this.chatHandlers.delete(msg.conversation_id);
-        }
+        this._executeToolCall(msg.conversation_id, msg.id, msg.tool, msg.args);
         break;
       }
 
@@ -229,50 +171,8 @@ export class WebSocketClient {
   }
 
   /**
-   * Register handlers for a chat conversation
-   * @param {string} conversationId - Conversation ID
-   * @param {Object} handlers - Event handlers
-   * @param {Function} [handlers.onStarted] - Called when chat starts
-   * @param {Function} [handlers.onChunk] - Called with each text chunk
-   * @param {Function} [handlers.onToolCall] - Called when tool execution starts (for UI updates); receives (tool)
-   * @param {Function} [handlers.onToolStatus] - Called with tool status updates
-   * @param {Function} [handlers.onPause] - Called when loop pauses
-   * @param {Function} [handlers.onComplete] - Called when done
-   * @param {Function} [handlers.onError] - Called on error
-   */
-  registerChatHandlers(conversationId, handlers) {
-    this.chatHandlers.set(conversationId, handlers);
-  }
-
-  /**
-   * Unregister handlers for a chat conversation
-   * @param {string} conversationId - Conversation ID
-   */
-  unregisterChatHandlers(conversationId) {
-    this.chatHandlers.delete(conversationId);
-  }
-
-  /**
-   * Start a chat session via WebSocket
-   * @param {Object} options - Chat options
-   * @param {string|null} options.conversationId - Existing conversation ID or null for new
-   * @param {string} options.message - User message
-   * @param {string|null} options.model - Model to use
-   * @param {Array<string>|null} options.enabledTools - Tools to enable
-   */
-  startChat(options) {
-    this.send({
-      type: "chat_message",
-      conversation_id: options.conversationId,
-      message: options.message,
-      model: options.model,
-      enabled_tools: options.enabledTools,
-    });
-  }
-
-  /**
    * Send a tool result via WebSocket
-   * @param {string} conversationId - Conversation ID
+   * @param {string} conversationId - MCP request ID
    * @param {string} toolCallId - Tool call ID
    * @param {*} result - Tool result
    */
@@ -283,29 +183,6 @@ export class WebSocketClient {
       tool_call_id: toolCallId,
       result,
     });
-  }
-
-  /**
-   * Continue a paused chat
-   * @param {string} conversationId - Conversation ID
-   */
-  continueChat(conversationId) {
-    this.send({
-      type: "continue_chat",
-      conversation_id: conversationId,
-    });
-  }
-
-  /**
-   * Cancel an active chat
-   * @param {string} conversationId - Conversation ID
-   */
-  cancelChat(conversationId) {
-    this.send({
-      type: "cancel_chat",
-      conversation_id: conversationId,
-    });
-    this.chatHandlers.delete(conversationId);
   }
 
   /**
@@ -349,20 +226,14 @@ export class WebSocketClient {
 
   /**
    * Execute a tool call and send the result back to the server
-   * @param {string} conversationId - Conversation or MCP request ID
+   * @param {string} conversationId - MCP request ID
    * @param {string} toolCallId - Tool call ID
    * @param {string} tool - Tool name
    * @param {Object} args - Tool arguments
-   * @param {Object} [handlers] - Optional handlers for UI notifications
    * @private
    */
-  async _executeToolCall(conversationId, toolCallId, tool, args, handlers) {
+  async _executeToolCall(conversationId, toolCallId, tool, args) {
     console.log(`${MODULE_ID} | Executing tool call: ${tool}`, args);
-
-    // Notify handler that tool execution is starting (for UI updates)
-    if (handlers?.onToolCall) {
-      handlers.onToolCall(tool);
-    }
 
     try {
       // Build user context from current FVTT user

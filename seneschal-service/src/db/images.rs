@@ -7,7 +7,7 @@ use rusqlite::{OptionalExtension, params};
 
 use super::Database;
 use super::chunks::cosine_similarity;
-use super::models::{DocumentImage, DocumentImageWithAccess, FvttImageDescription};
+use super::models::{DocumentImage, DocumentImageWithAccess};
 use crate::error::{DatabaseError, ServiceResult};
 use crate::tools::AccessLevel;
 
@@ -369,67 +369,5 @@ impl Database {
             .collect();
 
         Ok(images)
-    }
-
-    /// Get a cached FVTT image description by path and source
-    pub fn get_fvtt_image_description(
-        &self,
-        image_path: &str,
-        source: &str,
-    ) -> ServiceResult<Option<FvttImageDescription>> {
-        let conn = self.conn.lock().unwrap();
-
-        conn.query_row(
-            r#"
-            SELECT id, image_path, source, description, embedding, vision_model, width, height, created_at, updated_at
-            FROM fvtt_image_descriptions
-            WHERE image_path = ?1 AND source = ?2
-            "#,
-            params![image_path, source],
-            FvttImageDescription::from_row,
-        )
-        .optional()
-        .map_err(DatabaseError::Query)
-        .map_err(Into::into)
-    }
-
-    /// Insert or update a cached FVTT image description
-    pub fn upsert_fvtt_image_description(&self, desc: &FvttImageDescription) -> ServiceResult<()> {
-        let conn = self.conn.lock().unwrap();
-
-        let embedding_blob: Option<Vec<u8>> = desc
-            .embedding
-            .as_ref()
-            .map(|emb| emb.iter().flat_map(|f| f.to_le_bytes()).collect());
-
-        conn.execute(
-            r#"
-            INSERT INTO fvtt_image_descriptions
-                (id, image_path, source, description, embedding, vision_model, width, height, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-            ON CONFLICT(image_path, source) DO UPDATE SET
-                description = excluded.description,
-                embedding = excluded.embedding,
-                vision_model = excluded.vision_model,
-                width = excluded.width,
-                height = excluded.height,
-                updated_at = excluded.updated_at
-            "#,
-            params![
-                desc.id,
-                desc.image_path,
-                desc.source,
-                desc.description,
-                embedding_blob,
-                desc.vision_model,
-                desc.width.map(|v| v as i32),
-                desc.height.map(|v| v as i32),
-                desc.created_at.to_rfc3339(),
-                desc.updated_at.to_rfc3339(),
-            ],
-        )
-        .map_err(DatabaseError::Query)?;
-
-        Ok(())
     }
 }

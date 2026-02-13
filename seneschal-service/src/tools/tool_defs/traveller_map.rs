@@ -30,7 +30,6 @@ fn traveller_map_search() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerMapSearch,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Search the Traveller Map for worlds, sectors, or subsectors by name. Returns matching locations with their coordinates and basic data.",
         mcp_suffix: None,
@@ -59,7 +58,6 @@ fn traveller_map_jump_worlds() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerMapJumpWorlds,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Find all worlds within jump range of a specified location. Essential for planning travel routes and finding nearby destinations.",
         mcp_suffix: None,
@@ -92,7 +90,6 @@ fn traveller_map_route() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerMapRoute,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Calculate the shortest jump route between two locations. Returns a list of worlds along the optimal path.",
         mcp_suffix: None,
@@ -137,7 +134,6 @@ fn traveller_map_world_data() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerMapWorldData,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Get detailed world data for a specific location including UWP, trade codes, bases, stellar data, and more. More comprehensive than UWP parsing.",
         mcp_suffix: None,
@@ -166,7 +162,6 @@ fn traveller_map_sector_data() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerMapSectorData,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Get all world data for a sector or subsector. Returns UWP listings for all worlds in the region.",
         mcp_suffix: None,
@@ -195,7 +190,6 @@ fn traveller_map_coordinates() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerMapCoordinates,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Convert between location formats - sector/hex to world-space coordinates or vice versa.",
         mcp_suffix: None,
@@ -224,7 +218,6 @@ fn traveller_map_list_sectors() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerMapListSectors,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "List all known sectors in Charted Space. Can filter by milieu/era.",
         mcp_suffix: None,
@@ -248,7 +241,6 @@ fn traveller_map_poster_url() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerMapPosterUrl,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Generate a URL for a sector or subsector map image. Returns a URL that can be used to display or embed the map.",
         mcp_suffix: None,
@@ -282,7 +274,6 @@ fn traveller_map_jump_map_url() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerMapJumpMapUrl,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Generate a URL for a jump range map centered on a specific world. Shows all worlds within jump range.",
         mcp_suffix: None,
@@ -320,7 +311,6 @@ fn traveller_map_save_poster() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerMapSavePoster,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Download a sector or subsector map from Traveller Map and save it to FVTT assets. Returns the FVTT path for use in journal entries, scenes, etc.",
         mcp_suffix: None,
@@ -362,7 +352,6 @@ fn traveller_map_save_jump_map() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerMapSaveJumpMap,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Download a jump range map centered on a world and save it to FVTT assets. Returns the FVTT path for use in journal entries, scenes, etc.",
         mcp_suffix: None,

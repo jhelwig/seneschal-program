@@ -4,34 +4,21 @@
 //! all service functionality. The implementation is split across submodules
 //! for better organization:
 //!
-//! - `agentic_loop`: LLM interaction with tool calling
-//! - `chat`: WebSocket chat session management
 //! - `document_processing`: Document upload, chunking, embedding, captioning
 //! - `external_tools`: MCP external tool execution via WebSocket
-//! - `internal_tools`: Internal tool execution (search, traveller tools, etc.)
-//! - `prompts`: System prompt building and message formatting
-//! - `state`: In-memory state structures
 
-mod agentic_loop;
-mod chat;
 mod document_processing;
 mod external_tools;
-mod internal_tools;
-mod prompts;
-mod state;
-
-pub use state::ActiveRequest;
 
 use std::sync::Arc;
 
-use chrono::Utc;
 use dashmap::DashMap;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::config::RuntimeConfig;
-use crate::db::{Conversation, Database};
+use crate::db::Database;
 use crate::error::ServiceResult;
 use crate::i18n::I18n;
 use crate::ingestion::IngestionService;
@@ -48,16 +35,11 @@ pub struct SeneschalService {
     pub search: Arc<SearchService>,
     pub ingestion: Arc<IngestionService>,
     pub i18n: Arc<I18n>,
-    pub active_requests: Arc<DashMap<String, ActiveRequest>>,
     pub ws_manager: Arc<WebSocketManager>,
     /// Client for Traveller Map API
     pub traveller_map_client: TravellerMapClient,
     /// Client for Traveller Worlds (travellerworlds.com) map generation
     pub traveller_worlds_client: TravellerWorldsClient,
-    /// Senders for tool results, keyed by conversation_id
-    pub(crate) tool_result_senders: Arc<DashMap<String, oneshot::Sender<serde_json::Value>>>,
-    /// Senders for continue signals, keyed by conversation_id
-    pub(crate) continue_senders: Arc<DashMap<String, oneshot::Sender<()>>>,
     /// Senders for MCP tool results, keyed by request_id ("mcp:{uuid}")
     pub(crate) mcp_tool_result_senders: Arc<DashMap<String, oneshot::Sender<serde_json::Value>>>,
     /// Cancellation tokens for documents currently being processed.
@@ -130,12 +112,9 @@ impl SeneschalService {
             search,
             ingestion,
             i18n,
-            active_requests: Arc::new(DashMap::new()),
             ws_manager,
             traveller_map_client,
             traveller_worlds_client,
-            tool_result_senders: Arc::new(DashMap::new()),
-            continue_senders: Arc::new(DashMap::new()),
             mcp_tool_result_senders: Arc::new(DashMap::new()),
             processing_cancellation_tokens: Arc::new(DashMap::new()),
         })
@@ -164,51 +143,5 @@ impl SeneschalService {
         filters: Option<SearchFilters>,
     ) -> ServiceResult<Vec<SearchResult>> {
         self.search.search(query, user_role, limit, filters).await
-    }
-
-    /// Get conversation history
-    pub fn get_conversation(&self, conversation_id: &str) -> ServiceResult<Option<Conversation>> {
-        self.db.get_conversation(conversation_id)
-    }
-
-    /// List conversations for a user
-    pub fn list_conversations(
-        &self,
-        user_id: &str,
-        limit: usize,
-    ) -> ServiceResult<Vec<Conversation>> {
-        self.db.list_conversations(user_id, limit)
-    }
-
-    /// Run conversation cleanup
-    pub fn cleanup_conversations(&self) -> ServiceResult<usize> {
-        let ttl = self.runtime_config.dynamic().conversation.ttl();
-        let cutoff = Utc::now() - chrono::Duration::from_std(ttl).unwrap_or_default();
-        self.db.cleanup_old_conversations(cutoff)
-    }
-
-    /// Remove excess conversations per user
-    pub fn cleanup_excess_conversations(&self, max_per_user: u32) -> ServiceResult<usize> {
-        self.db.cleanup_excess_conversations_all(max_per_user)
-    }
-
-    /// Clone for spawning tasks
-    pub(crate) fn clone_for_task(&self) -> Self {
-        Self {
-            runtime_config: self.runtime_config.clone(),
-            db: self.db.clone(),
-            ollama: self.ollama.clone(),
-            search: self.search.clone(),
-            ingestion: self.ingestion.clone(),
-            i18n: self.i18n.clone(),
-            active_requests: self.active_requests.clone(),
-            ws_manager: self.ws_manager.clone(),
-            traveller_map_client: self.traveller_map_client.clone(),
-            traveller_worlds_client: self.traveller_worlds_client.clone(),
-            tool_result_senders: self.tool_result_senders.clone(),
-            continue_senders: self.continue_senders.clone(),
-            mcp_tool_result_senders: self.mcp_tool_result_senders.clone(),
-            processing_cancellation_tokens: self.processing_cancellation_tokens.clone(),
-        }
     }
 }

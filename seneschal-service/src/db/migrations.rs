@@ -132,6 +132,7 @@ pub(super) fn run_migrations(conn: &Connection) -> ServiceResult<()> {
     run_captioning_status_migration(conn)?;
     run_settings_table_migration(conn)?;
     run_image_type_rename_migration(conn)?;
+    run_drop_conversations_table_migration(conn)?;
 
     Ok(())
 }
@@ -501,6 +502,16 @@ fn run_image_type_rename_migration(conn: &Connection) -> ServiceResult<()> {
     .map_err(|e| DatabaseError::Migration {
         message: format!("Failed to rename region_render to render: {}", e),
     })?;
+
+    Ok(())
+}
+
+/// Migration: Drop conversations table (chat functionality removed in favor of MCP-only interface)
+fn run_drop_conversations_table_migration(conn: &Connection) -> ServiceResult<()> {
+    conn.execute("DROP TABLE IF EXISTS conversations", [])
+        .map_err(|e| DatabaseError::Migration {
+            message: format!("Failed to drop conversations table: {}", e),
+        })?;
 
     Ok(())
 }

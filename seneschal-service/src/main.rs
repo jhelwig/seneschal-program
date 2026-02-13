@@ -96,39 +96,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         auto_import::start_auto_import_worker(service.clone(), auto_import_dir.clone());
     }
 
-    // Start conversation cleanup background task
-    let cleanup_service = service.clone();
-    let cleanup_interval = runtime_config.dynamic().conversation.cleanup_interval();
-    let max_per_user = runtime_config.dynamic().conversation.max_per_user;
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(cleanup_interval);
-        loop {
-            interval.tick().await;
-            // Clean up old conversations
-            match cleanup_service.cleanup_conversations() {
-                Ok(count) if count > 0 => {
-                    info!(removed = count, "Cleaned up old conversations");
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Conversation cleanup failed");
-                }
-                _ => {}
-            }
-            // Clean up excess conversations per user
-            if max_per_user > 0 {
-                match cleanup_service.cleanup_excess_conversations(max_per_user) {
-                    Ok(count) if count > 0 => {
-                        info!(removed = count, "Cleaned up excess conversations per user");
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Excess conversation cleanup failed");
-                    }
-                    _ => {}
-                }
-            }
-        }
-    });
-
     // Start the server
     let addr = format!(
         "{}:{}",

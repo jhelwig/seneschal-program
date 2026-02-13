@@ -39,7 +39,6 @@ fn system_schema() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::SystemSchema,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Get the game system's schema for actors and items.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -64,7 +63,6 @@ fn fvtt_read() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::FvttRead,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Read a Foundry VTT document. Document types: actor (characters, NPCs, creatures), item (weapons, armor, equipment), journal_entry (notes, handouts), scene (maps/battlemaps where tokens are placed), rollable_table (random tables).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -94,7 +92,6 @@ fn fvtt_write() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::FvttWrite,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Create or modify a Foundry VTT document. Document types: actor (characters, NPCs, creatures), item (weapons, armor, equipment), journal_entry (notes, handouts), scene (maps/battlemaps - use with image_deliver to create maps from PDF images), rollable_table (random tables).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -129,7 +126,6 @@ fn fvtt_query() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::FvttQuery,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Query Foundry VTT documents with filters. Document types: actor (characters, NPCs), item (equipment), journal_entry (notes), scene (maps/battlemaps), rollable_table (random tables).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -163,7 +159,6 @@ fn dice_roll() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::DiceRoll,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Roll dice using FVTT's dice system. Results are logged to the game.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -192,7 +187,6 @@ fn fvtt_assets_browse() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::FvttAssetsBrowse,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Browse files in Foundry VTT's file system. Returns a list of files and directories at the specified path.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -230,7 +224,6 @@ fn image_describe() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::ImageDescribe,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Get a detailed vision model description of an image file in FVTT. Uses the configured vision model to analyze the image. Results are cached.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -263,7 +256,6 @@ fn list_folders() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::ListFolders,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "List all folders for a specific document type in Foundry VTT. Lists from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -280,7 +272,7 @@ fn list_folders() -> ToolMetadata {
                     },
                     "parent_folder": {
                         "type": "string",
-                        "description": "Filter to only show folders inside this parent folder"
+                        "description": "Filter to only show folders inside this parent (name or ID)"
                     },
                     "pack_id": {
                         "type": "string",
@@ -297,7 +289,6 @@ fn create_folder() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::CreateFolder,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Create a new folder for organizing documents in Foundry VTT. Can create in world or compendium (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -318,7 +309,7 @@ fn create_folder() -> ToolMetadata {
                     },
                     "parent_folder": {
                         "type": "string",
-                        "description": "Name of parent folder for nesting (optional)"
+                        "description": "Parent folder name or ID for nesting (optional)"
                     },
                     "color": {
                         "type": "string",
@@ -339,7 +330,6 @@ fn update_folder() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::UpdateFolder,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Update a folder's properties (rename, move, or change color). Works with world or compendium (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -380,7 +370,6 @@ fn delete_folder() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::DeleteFolder,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Delete a folder. By default, documents inside are moved to root level. Works with world or compendium (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -413,7 +402,6 @@ fn list_users() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::ListUsers,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "List all users in the Foundry VTT world. Returns user IDs, names, roles, and online status.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -437,7 +425,6 @@ fn update_ownership() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::UpdateOwnership,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Update ownership permissions for a Foundry VTT document. Permission levels: 0=NONE, 1=LIMITED, 2=OBSERVER, 3=OWNER. Use 'default' key to set base permissions for all users.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),

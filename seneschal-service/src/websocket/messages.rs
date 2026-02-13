@@ -22,27 +22,12 @@ pub enum ClientMessage {
     SubscribeDocuments,
     /// Unsubscribe from document processing updates
     UnsubscribeDocuments,
-    /// Start a new chat or continue an existing conversation
-    ChatMessage {
-        /// None = start new conversation, Some = continue existing
-        conversation_id: Option<String>,
-        /// The user's message
-        message: String,
-        /// Model to use (optional, uses default if not specified)
-        model: Option<String>,
-        /// Which tools to enable (optional, uses all if not specified)
-        enabled_tools: Option<Vec<String>>,
-    },
-    /// Send a tool result back to the agentic loop
+    /// Send a tool result back (for MCP external tools executed by FVTT client)
     ToolResult {
         conversation_id: String,
         tool_call_id: String,
         result: serde_json::Value,
     },
-    /// Continue a paused chat (after tool limit reached)
-    ContinueChat { conversation_id: String },
-    /// Cancel an active chat
-    CancelChat { conversation_id: String },
 }
 
 /// Messages sent from server to client
@@ -91,54 +76,12 @@ pub enum ServerMessage {
         message: String,
         recoverable: bool,
     },
-    /// Chat conversation started
-    ChatStarted { conversation_id: String },
-    /// Streaming chat content
-    ChatContent {
-        conversation_id: String,
-        text: String,
-    },
-    /// Tool call requested (for external tools executed by client)
+    /// Tool call requested (for MCP external tools executed by FVTT client)
     ChatToolCall {
         conversation_id: String,
         id: String,
         tool: String,
         args: serde_json::Value,
-    },
-    /// Status update for an internal tool being executed
-    ChatToolStatus {
-        conversation_id: String,
-        tool_call_id: String,
-        message: String,
-    },
-    /// Result from an internal tool execution
-    ChatToolResult {
-        conversation_id: String,
-        tool_call_id: String,
-        tool: String,
-        summary: String,
-    },
-    /// Chat paused due to limits (tool calls, time, etc.)
-    ChatPaused {
-        conversation_id: String,
-        reason: String,
-        tool_calls_made: u32,
-        elapsed_seconds: u64,
-        message: String,
-    },
-    /// Chat turn completed
-    ChatTurnComplete {
-        conversation_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        prompt_tokens: Option<u32>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        completion_tokens: Option<u32>,
-    },
-    /// Chat error
-    ChatError {
-        conversation_id: String,
-        message: String,
-        recoverable: bool,
     },
 }
 

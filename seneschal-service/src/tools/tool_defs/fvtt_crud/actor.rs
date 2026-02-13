@@ -13,6 +13,7 @@ pub fn register(registry: &mut HashMap<ToolName, ToolMetadata>) {
     let tools = [
         create_actor(),
         get_actor(),
+        get_actors(),
         update_actor(),
         delete_actor(),
         list_actors(),
@@ -26,7 +27,6 @@ fn create_actor() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::CreateActor,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Create a Foundry VTT actor (character, NPC, creature, vehicle, etc.). Use system_schema first to understand the actor types and data structure. Can create in world or compendium. Biography/notes fields support cross-document links: @UUID[Type.ID]{Label}.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -54,7 +54,7 @@ fn create_actor() -> ToolMetadata {
                     },
                     "folder": {
                         "type": "string",
-                        "description": "Name of folder to place the actor in"
+                        "description": "Folder name or ID to place the actor in"
                     },
                     "pack_id": {
                         "type": "string",
@@ -71,7 +71,6 @@ fn get_actor() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::GetActor,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Get a Foundry VTT actor by ID. Returns the actor's complete data. Can read from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -96,11 +95,39 @@ fn get_actor() -> ToolMetadata {
     }
 }
 
+fn get_actors() -> ToolMetadata {
+    ToolMetadata {
+        name: ToolName::GetActors,
+        location: ToolLocation::External,
+        mcp_enabled: true,
+        description: "Get multiple actors by ID in one call. Returns full actor data for each. Maximum 20 actors per call.",
+        mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
+        category: "fvtt_crud",
+        priority: 2,
+        parameters: || {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "actor_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Array of actor IDs to retrieve (max 20)"
+                    },
+                    "pack_id": {
+                        "type": "string",
+                        "description": "Compendium pack ID to read from. If omitted, reads from world."
+                    }
+                },
+                "required": ["actor_ids"]
+            })
+        },
+    }
+}
+
 fn update_actor() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::UpdateActor,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Update an existing Foundry VTT actor. Can modify name, image, stats, or any system data. Works with world or compendium (if unlocked). Biography/notes fields support cross-document links: @UUID[Type.ID]{Label}.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -145,7 +172,6 @@ fn delete_actor() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::DeleteActor,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Delete a Foundry VTT actor permanently. Works with world or compendium (if unlocked).",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -174,7 +200,6 @@ fn list_actors() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::ListActors,
         location: ToolLocation::External,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "List actors in Foundry VTT. Can filter by name pattern. Lists from world or compendium.",
         mcp_suffix: Some(EXTERNAL_MCP_SUFFIX),
@@ -194,7 +219,7 @@ fn list_actors() -> ToolMetadata {
                     },
                     "folder": {
                         "type": "string",
-                        "description": "Filter by folder name"
+                        "description": "Filter by folder name or ID"
                     },
                     "limit": {
                         "type": "integer",

@@ -115,14 +115,14 @@
           </td>
           <td class="document-actions">
             {{#if this.isPdf}}
-            <button type="button" class="seneschal-reextract-images" title="{{localize 'SENESCHAL.Documents.ReextractImages'}}" {{#if ../processingDoc}}disabled{{/if}} {{#if (eq this.processing_status 'processing')}}disabled{{/if}}>
+            <button type="button" class="seneschal-reextract-images" title="{{localize 'SENESCHAL.Documents.ReextractImages'}}" {{#if (eq ../processingDoc this.id)}}disabled{{/if}} {{#if (eq this.processing_status 'processing')}}disabled{{/if}}>
               <i class="fas fa-sync-alt"></i>
             </button>
             {{#if this.image_count}}
             <button type="button" class="seneschal-browse-images" title="{{localize 'SENESCHAL.Documents.BrowseImages'}}">
               <i class="fas fa-eye"></i>
             </button>
-            <button type="button" class="seneschal-delete-images" title="{{localize 'SENESCHAL.Documents.DeleteImages'}}" {{#if ../processingDoc}}disabled{{/if}} {{#if (eq this.processing_status 'processing')}}disabled{{/if}}>
+            <button type="button" class="seneschal-delete-images" title="{{localize 'SENESCHAL.Documents.DeleteImages'}}" {{#if (eq ../processingDoc this.id)}}disabled{{/if}} {{#if (eq this.processing_status 'processing')}}disabled{{/if}}>
               <i class="fas fa-images"></i>
             </button>
             {{/if}}
@@ -130,7 +130,7 @@
             <button type="button" class="seneschal-edit-doc" title="{{localize 'SENESCHAL.Documents.Edit'}}">
               <i class="fas fa-edit"></i>
             </button>
-            <button type="button" class="seneschal-delete-doc" title="{{localize 'SENESCHAL.Documents.Delete'}}" {{#if ../processingDoc}}disabled{{/if}}>
+            <button type="button" class="seneschal-delete-doc" title="{{localize 'SENESCHAL.Documents.Delete'}}" {{#if (eq ../processingDoc this.id)}}disabled{{/if}}>
               <i class="fas fa-trash"></i>
             </button>
           </td>

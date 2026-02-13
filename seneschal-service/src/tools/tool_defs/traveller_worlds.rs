@@ -25,7 +25,6 @@ fn traveller_worlds_canon_url() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerWorldsCanonUrl,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Generate a travellerworlds.com URL for a canon Traveller world. Fetches world data from Traveller Map API and constructs the URL with all parameters. Useful for previewing before saving.",
         mcp_suffix: None,
@@ -54,7 +53,6 @@ fn traveller_worlds_canon_save() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerWorldsCanonSave,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Generate a world map SVG for a canon Traveller world using travellerworlds.com and save it to FVTT assets. Fetches world data from Traveller Map API, generates the map via headless browser, and saves the SVG.",
         mcp_suffix: Some("Requires geckodriver running."),
@@ -87,7 +85,6 @@ fn traveller_worlds_custom_url() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerWorldsCustomUrl,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Generate a travellerworlds.com URL for a custom/homebrew world with manual parameters. Useful for previewing before saving.",
         mcp_suffix: None,
@@ -149,7 +146,6 @@ fn traveller_worlds_custom_save() -> ToolMetadata {
     ToolMetadata {
         name: ToolName::TravellerWorldsCustomSave,
         location: ToolLocation::Internal,
-        ollama_enabled: true,
         mcp_enabled: true,
         description: "Generate a world map SVG for a custom/homebrew world using travellerworlds.com and save it to FVTT assets. Uses headless browser to extract the generated SVG.",
         mcp_suffix: Some("Requires geckodriver running."),

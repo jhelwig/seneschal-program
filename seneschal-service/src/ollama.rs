@@ -1,13 +1,10 @@
-use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tracing::{debug, error, warn};
+use tracing::warn;
 
 use crate::config::OllamaConfig;
 use crate::error::{OllamaError, ServiceError, ServiceResult};
-use crate::tools::{OllamaToolDefinition, ToolCall, get_ollama_tool_definitions};
 
 /// Ollama API client
 pub struct OllamaClient {
@@ -126,219 +123,6 @@ impl OllamaClient {
         Ok(models)
     }
 
-    /// Get context length for a specific model
-    pub async fn get_model_context_length(&self, model_name: &str) -> Option<u32> {
-        let url = format!("{}/api/show", self.config.base_url);
-
-        let response = self
-            .client
-            .post(&url)
-            .json(&serde_json::json!({ "name": model_name }))
-            .send()
-            .await
-            .ok()?;
-
-        if !response.status().is_success() {
-            return None;
-        }
-
-        let show: ShowResponse = response.json().await.ok()?;
-
-        // Extract context length from model_info
-        show.model_info.as_ref().and_then(|info| {
-            info.get("general.architecture")
-                .and_then(|arch| arch.as_str())
-                .and_then(|arch| {
-                    let key = format!("{}.context_length", arch);
-                    info.get(&key)
-                })
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u32)
-        })
-    }
-
-    /// Generate a streaming chat completion
-    pub async fn chat_stream(
-        &self,
-        request: ChatRequest,
-    ) -> ServiceResult<mpsc::Receiver<StreamEvent>> {
-        let url = format!("{}/api/chat", self.config.base_url);
-
-        let model = request
-            .model
-            .unwrap_or_else(|| self.config.default_model.clone());
-
-        let ollama_request = OllamaChatRequest {
-            model: model.clone(),
-            messages: request.messages,
-            tools: if request.enable_tools {
-                Some(get_ollama_tool_definitions())
-            } else {
-                None
-            },
-            stream: true,
-            options: Some(OllamaOptions {
-                temperature: Some(request.temperature.unwrap_or(self.config.temperature)),
-                num_ctx: request.num_ctx,
-            }),
-        };
-
-        // Log the tool names being sent to Ollama
-        if let Some(ref tools) = ollama_request.tools {
-            let tool_names: Vec<&str> = tools.iter().map(|t| t.function.name.as_str()).collect();
-            debug!(
-                model = %model,
-                tools = ?tool_names,
-                "Sending chat request to Ollama with tools"
-            );
-        } else {
-            debug!(model = %model, "Sending chat request to Ollama without tools");
-        }
-
-        // Log the messages being sent (at trace level for verbose debugging)
-        for (i, msg) in ollama_request.messages.iter().enumerate() {
-            let tool_call_count = msg.tool_calls.as_ref().map(|tc| tc.len()).unwrap_or(0);
-            debug!(
-                index = i,
-                role = %msg.role,
-                content_length = msg.content.len(),
-                content_preview = %msg.content.chars().take(200).collect::<String>(),
-                tool_call_count = tool_call_count,
-                "Message {} to Ollama", i
-            );
-        }
-
-        // Log the full request as JSON at trace level
-        if tracing::enabled!(tracing::Level::TRACE)
-            && let Ok(json) = serde_json::to_string_pretty(&ollama_request)
-        {
-            tracing::trace!(request = %json, "Full Ollama request");
-        }
-
-        let response = self
-            .client
-            .post(&url)
-            .json(&ollama_request)
-            .send()
-            .await
-            .map_err(|e| OllamaError::Connection {
-                url: url.clone(),
-                source: e,
-            })?;
-
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let message = response.text().await.unwrap_or_default();
-
-            if message.contains("model") && message.contains("not found") {
-                return Err(ServiceError::Ollama(OllamaError::ModelNotFound { model }));
-            }
-
-            return Err(ServiceError::Ollama(OllamaError::Generation {
-                status,
-                message,
-            }));
-        }
-
-        let (tx, rx) = mpsc::channel(100);
-
-        // Spawn a task to process the stream
-        let mut stream = response.bytes_stream();
-
-        tokio::spawn(async move {
-            let mut buffer = String::new();
-            let mut tool_call_count = 0usize;
-
-            while let Some(chunk_result) = stream.next().await {
-                match chunk_result {
-                    Ok(chunk) => {
-                        buffer.push_str(&String::from_utf8_lossy(&chunk));
-
-                        // Process complete JSON lines
-                        while let Some(pos) = buffer.find('\n') {
-                            let line = buffer[..pos].trim().to_string();
-                            buffer = buffer[pos + 1..].to_string();
-
-                            if line.is_empty() {
-                                continue;
-                            }
-
-                            match serde_json::from_str::<OllamaChatResponse>(&line) {
-                                Ok(response) => {
-                                    // Handle content
-                                    if !response.message.content.is_empty()
-                                        && tx
-                                            .send(StreamEvent::Content(response.message.content))
-                                            .await
-                                            .is_err()
-                                    {
-                                        return;
-                                    }
-
-                                    // Handle tool calls
-                                    if let Some(calls) = response.message.tool_calls {
-                                        for (i, call) in calls.into_iter().enumerate() {
-                                            let tool_call = ToolCall {
-                                                id: format!("tc_{}", tool_call_count + i),
-                                                tool: call.function.name.clone(),
-                                                args: call.function.arguments.clone(),
-                                            };
-
-                                            // Log tool call details for debugging
-                                            debug!(
-                                                tool_call_id = %tool_call.id,
-                                                tool_name = %call.function.name,
-                                                tool_args = %call.function.arguments,
-                                                "LLM requested tool call"
-                                            );
-
-                                            tool_call_count += 1;
-                                            if tx
-                                                .send(StreamEvent::ToolCall(tool_call))
-                                                .await
-                                                .is_err()
-                                            {
-                                                return;
-                                            }
-                                        }
-                                    }
-
-                                    // Handle completion
-                                    if response.done {
-                                        if tx
-                                            .send(StreamEvent::Done {
-                                                prompt_eval_count: response.prompt_eval_count,
-                                                eval_count: response.eval_count,
-                                            })
-                                            .await
-                                            .is_err()
-                                        {
-                                            debug!(
-                                                "Stream receiver dropped before completion signal"
-                                            );
-                                        }
-                                        return;
-                                    }
-                                }
-                                Err(e) => {
-                                    error!(error = %e, line = %line, "Failed to parse Ollama response");
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        if tx.send(StreamEvent::Error(e.to_string())).await.is_err() {
-                            debug!("Stream receiver dropped before error could be sent");
-                        }
-                        return;
-                    }
-                }
-            }
-        });
-
-        Ok(rx)
-    }
-
     /// Generate a non-streaming response (for simple tasks like image captioning)
     pub async fn generate_simple(
         &self,
@@ -350,11 +134,9 @@ impl OllamaClient {
         let request = OllamaChatRequest {
             model: model.to_string(),
             messages,
-            tools: None,
             stream: false,
             options: Some(OllamaOptions {
                 temperature: Some(0.3), // Lower temperature for more consistent descriptions
-                num_ctx: None,
             }),
         };
 
@@ -400,102 +182,25 @@ impl OllamaClient {
     }
 }
 
-/// Chat request
-#[derive(Debug, Clone)]
-pub struct ChatRequest {
-    pub model: Option<String>,
-    pub messages: Vec<ChatMessage>,
-    pub temperature: Option<f32>,
-    pub num_ctx: Option<u32>,
-    pub enable_tools: bool,
-}
-
 /// Chat message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<OllamaToolCall>>,
     /// Base64-encoded images for vision models
     #[serde(skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
 }
 
 impl ChatMessage {
-    pub fn system(content: impl Into<String>) -> Self {
-        Self {
-            role: "system".to_string(),
-            content: content.into(),
-            tool_calls: None,
-            images: None,
-        }
-    }
-
-    pub fn user(content: impl Into<String>) -> Self {
-        Self {
-            role: "user".to_string(),
-            content: content.into(),
-            tool_calls: None,
-            images: None,
-        }
-    }
-
     /// Create a user message with an image for vision models
     pub fn user_with_image(content: impl Into<String>, image_base64: String) -> Self {
         Self {
             role: "user".to_string(),
             content: content.into(),
-            tool_calls: None,
             images: Some(vec![image_base64]),
         }
     }
-
-    pub fn assistant(content: impl Into<String>) -> Self {
-        Self {
-            role: "assistant".to_string(),
-            content: content.into(),
-            tool_calls: None,
-            images: None,
-        }
-    }
-
-    pub fn assistant_with_tool_calls(
-        content: impl Into<String>,
-        tool_calls: Vec<OllamaToolCall>,
-    ) -> Self {
-        Self {
-            role: "assistant".to_string(),
-            content: content.into(),
-            tool_calls: if tool_calls.is_empty() {
-                None
-            } else {
-                Some(tool_calls)
-            },
-            images: None,
-        }
-    }
-
-    pub fn tool(content: impl Into<String>) -> Self {
-        Self {
-            role: "tool".to_string(),
-            content: content.into(),
-            tool_calls: None,
-            images: None,
-        }
-    }
-}
-
-/// Stream events
-#[derive(Debug, Clone)]
-pub enum StreamEvent {
-    Content(String),
-    ToolCall(ToolCall),
-    Done {
-        prompt_eval_count: Option<u32>,
-        eval_count: Option<u32>,
-    },
-    Error(String),
 }
 
 /// Model information
@@ -513,8 +218,6 @@ pub struct ModelInfo {
 struct OllamaChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<OllamaToolDefinition>>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<OllamaOptions>,
@@ -524,37 +227,17 @@ struct OllamaChatRequest {
 struct OllamaOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    num_ctx: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
 struct OllamaChatResponse {
     message: OllamaMessage,
-    done: bool,
-    #[serde(default)]
-    prompt_eval_count: Option<u32>,
-    #[serde(default)]
-    eval_count: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
 struct OllamaMessage {
     #[serde(default)]
     content: String,
-    #[serde(default)]
-    tool_calls: Option<Vec<OllamaToolCall>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OllamaToolCall {
-    pub function: OllamaFunctionCall,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OllamaFunctionCall {
-    pub name: String,
-    pub arguments: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]

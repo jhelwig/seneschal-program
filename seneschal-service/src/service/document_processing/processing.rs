@@ -50,13 +50,22 @@ impl SeneschalService {
             .unwrap_or("document")
             .to_string();
 
-        // Extract vision model from metadata if present
+        // Extract vision model from metadata, falling back to runtime config
         let vision_model = document
             .metadata
             .as_ref()
             .and_then(|m| m.get("vision_model"))
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(|s| s.to_string())
+            .or_else(|| {
+                let config = self.runtime_config.dynamic();
+                let model = &config.ollama.vision_model;
+                if model.is_empty() {
+                    None
+                } else {
+                    Some(model.clone())
+                }
+            });
 
         info!(doc_id = %doc_id, "Resuming/starting document processing");
 

@@ -121,22 +121,6 @@ const SETTING_CATEGORIES = {
         max: 1073741824,
         step: 1048576,
       },
-      "conversation.ttl_secs": {
-        type: "number",
-        label: "SENESCHAL.Settings.Backend.Limits.ConversationTtl",
-        hint: "SENESCHAL.Settings.Backend.Limits.ConversationTtlHint",
-        min: 3600,
-        max: 2592000,
-        step: 3600,
-      },
-      "conversation.max_per_user": {
-        type: "number",
-        label: "SENESCHAL.Settings.Backend.Limits.MaxConversationsPerUser",
-        hint: "SENESCHAL.Settings.Backend.Limits.MaxConversationsPerUserHint",
-        min: 0,
-        max: 1000,
-        step: 1,
-      },
     },
   },
   advanced: {

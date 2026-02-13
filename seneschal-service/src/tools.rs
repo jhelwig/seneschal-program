@@ -1,25 +1,20 @@
-//! Tool definitions and types for the agentic loop.
+//! Tool definitions and types for MCP.
 //!
 //! This module contains:
-//! - Core tool types (ToolCall, ToolResult)
 //! - Access level definitions
 //! - Tool classification (internal vs external)
-//! - Unified tool registry for both Ollama and MCP
+//! - Unified tool registry for MCP
 //! - Submodules for tool definitions and game-specific tools
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub mod definitions;
 pub mod registry;
 pub mod tool_defs;
 pub mod traveller;
 pub mod traveller_map;
 pub mod traveller_worlds;
 
-pub use definitions::{
-    OllamaFunctionDefinition, OllamaToolDefinition, get_ollama_tool_definitions,
-};
 pub use registry::REGISTRY;
 pub use traveller::TravellerTool;
 pub use traveller_map::{TravellerMapClient, TravellerMapTool};
@@ -73,46 +68,6 @@ pub struct SearchFilters {
     pub tags: Vec<String>,
     #[serde(default)]
     pub tags_match: TagMatch,
-}
-
-/// Tool call from the LLM
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCall {
-    pub id: String,
-    pub tool: String,
-    pub args: serde_json::Value,
-}
-
-/// Tool result to return to the LLM
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResult {
-    pub tool_call_id: String,
-    #[serde(flatten)]
-    pub outcome: ToolOutcome,
-}
-
-/// Tool execution outcome
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ToolOutcome {
-    Success { result: serde_json::Value },
-    Error { error: String },
-}
-
-impl ToolResult {
-    pub fn success(tool_call_id: String, result: serde_json::Value) -> Self {
-        Self {
-            tool_call_id,
-            outcome: ToolOutcome::Success { result },
-        }
-    }
-
-    pub fn error(tool_call_id: String, error: String) -> Self {
-        Self {
-            tool_call_id,
-            outcome: ToolOutcome::Error { error },
-        }
-    }
 }
 
 /// Classify whether a tool is internal (backend-only) or external (requires client)

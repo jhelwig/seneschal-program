@@ -4,7 +4,6 @@
 //! organized into submodules by domain.
 
 mod chunks;
-mod conversations;
 mod documents;
 mod images;
 mod migrations;
@@ -12,9 +11,8 @@ pub mod models;
 mod settings;
 
 pub use models::{
-    CaptioningStatus, Chunk, Conversation, ConversationMessage, ConversationMetadata, Document,
-    DocumentImage, DocumentImageWithAccess, FvttImageDescription, ImageType, MessageRole,
-    ProcessingStatus, ToolCallRecord, ToolResultRecord,
+    CaptioningStatus, Chunk, Document, DocumentImage, DocumentImageWithAccess, ImageType,
+    ProcessingStatus,
 };
 
 use rusqlite::Connection;
