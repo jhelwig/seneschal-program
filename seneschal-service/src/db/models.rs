@@ -297,4 +297,3 @@ pub struct DocumentImageWithAccess {
     pub document_title: String,
     pub access_level: AccessLevel,
 }
-

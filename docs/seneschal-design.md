@@ -33,7 +33,7 @@ flowchart TB
         Panel --> BackendClient
         FVTTWrapper --> BackendClient
     end
-    
+
     subgraph Backend["Backend Service (Rust/axum)"]
         subgraph API["HTTP API Layer"]
             ChatAPI["/api/chat<br/>/api/models<br/>/api/tool_result"]
@@ -41,31 +41,31 @@ flowchart TB
             SearchAPI["/api/search"]
             HealthAPI["/health, /metrics"]
         end
-        
+
         subgraph Core["Core Service Layer"]
             OllamaClient[Ollama Client]
             Ingestion[Document Ingestion<br/>& Chunking]
             ACL[Access Control]
         end
-        
+
         subgraph Storage["Storage Layer"]
             DataDir[(Data Directory<br/>SQLite + Vectors)]
             FVTTAssets[(FVTT Assets<br/>optional RW)]
         end
-        
+
         subgraph MCP["MCP Server Interface"]
             MCPEndpoint["/mcp endpoint"]
         end
-        
+
         API --> Core
         Core --> Storage
     end
-    
+
     subgraph External["External Services"]
         Ollama[(Ollama<br/>Configurable URL)]
         ClaudeDesktop[Claude Desktop /<br/>MCP Clients]
     end
-    
+
     BackendClient <-->|HTTPS| API
     OllamaClient <--> Ollama
     MCPEndpoint <--> ClaudeDesktop
@@ -102,11 +102,11 @@ interface ConversationSession {
   messages: ConversationMessage[];
   createdAt: Date;
   lastActivityAt: Date;
-  
+
   // Context tracking
   totalTokensEstimate: number;
   maxContextTokens: number;  // From backend config
-  
+
   // Attached context
   activeDocumentIds: string[];  // Documents being discussed
   activeActorIds: string[];     // Actors in focus
@@ -117,7 +117,7 @@ interface ConversationMessage {
   content: string;
   timestamp: Date;
   tokenEstimate: number;
-  
+
   // For assistant messages with tool use
   toolCalls?: ToolCall[];
   toolResults?: ToolResult[];
@@ -175,25 +175,25 @@ flowchart TD
     A[Receive Request] --> B[Build Prompt + Tools]
     B --> C[Send to Ollama]
     C --> D[Parse LLM Response]
-    
+
     D --> E{Response Type?}
-    
+
     E -->|Tool Call| F{Internal Tool?}
     E -->|Content| G[Stream to Client]
-    
+
     F -->|Yes| H[Execute Immediately]
     F -->|No| I[Send to Client via SSE]
-    
+
     I --> J[Wait for tool_result]
     J --> K[Add Result to Messages]
     H --> K
-    
+
     G --> L{More Generation?}
     K --> L
-    
+
     L -->|Yes| M{Limits Reached?}
     L -->|No| N[Done]
-    
+
     M -->|No| C
     M -->|Yes| O[Send Pause Event]
     O --> P[Wait for Continue Signal]
@@ -210,34 +210,34 @@ sequenceDiagram
     participant B as Browser
     participant S as Backend
     participant O as Ollama
-    
+
     B->>S: POST /api/chat<br/>"repair damaged jump drive skills?"
     S-->>B: SSE: thinking
-    
+
     S->>O: chat (tools enabled)
     O->>S: tool_call: document_search<br/>query: "jump drive repair"
-    
+
     Note over S: INTERNAL: execute RAG search
     S-->>B: SSE: tool_status "Searching rulebooks..."
-    
+
     S->>O: chat (with search results)
     O->>S: tool_call: document_get<br/>doc_id: "core-p247"
-    
+
     Note over S: INTERNAL: fetch full page
-    
+
     S->>O: chat (with page content)
     O->>S: tool_call: fvtt_read<br/>{actor: "ship"}
-    
+
     S-->>B: SSE: tool_call id="tc_1"<br/>tool="fvtt_read"
     Note over S: EXTERNAL: waiting for client
-    
+
     Note over B: Execute game.actors.get()<br/>with user's permissions
-    
+
     B->>S: POST /api/tool_result<br/>id="tc_1", result={jump_drive: ...}
-    
+
     S->>O: chat (with ship data)
     O->>S: content (streaming)
-    
+
     S-->>B: SSE: content "Based on the Core Rulebook..."
     S-->>B: SSE: content "...Engineer (j-drive) check at 8+..."
     S-->>B: SSE: content "...taking 1D hours..."
@@ -247,7 +247,7 @@ sequenceDiagram
 #### 2.4.4 SSE Event Types
 
 ```typescript
-type SSEEvent = 
+type SSEEvent =
   | { type: "content"; text: string }                    // Streaming text from LLM
   | { type: "tool_call"; id: string; tool: string;       // External tool request
       args: Record<string, unknown> }
@@ -268,7 +268,7 @@ POST /api/chat/continue
 { "conversation_id": "conv_xyz", "action": "continue" }
 
 // To cancel:
-POST /api/chat/continue  
+POST /api/chat/continue
 { "conversation_id": "conv_xyz", "action": "cancel" }
 ```
 
@@ -278,16 +278,16 @@ POST /api/chat/continue
 pub struct AgenticLoopConfig {
     /// Tool calls before pause prompt (internal + external combined)
     pub tool_call_pause_threshold: u32,  // Default: 10
-    
+
     /// Maximum internal tool calls before requiring at least one LLM response
     pub max_consecutive_internal: u32,  // Default: 5
-    
+
     /// Time before pause prompt (entire request including all loops)
     pub time_pause_threshold: Duration,  // Default: 60s
-    
+
     /// Hard timeout (cannot continue past this)
     pub hard_timeout: Duration,  // Default: 300s
-    
+
     /// Timeout waiting for external tool result from client
     pub external_tool_timeout: Duration,  // Default: 30s
 }
@@ -338,17 +338,17 @@ struct ConversationStore {
 struct ActiveRequest {
     conversation_id: String,
     user_context: UserContext,
-    
+
     // Message accumulator (grows during agentic loop)
     messages: Vec<Message>,
-    
+
     // Tool tracking
     tool_calls_made: u32,
     pending_external_tool: Option<PendingToolCall>,
-    
+
     // Pause state
     paused: bool,
-    
+
     // Timing
     started_at: Instant,
 }
@@ -416,10 +416,10 @@ struct ConversationMetadata {
 pub struct ConversationConfig {
     /// How long to keep conversations before cleanup
     pub conversation_ttl: Duration,  // Default: 7 days
-    
-    /// Run cleanup every N hours  
+
+    /// Run cleanup every N hours
     pub cleanup_interval: Duration,  // Default: 24 hours
-    
+
     /// Maximum conversations per user (0 = unlimited)
     pub max_per_user: u32,  // Default: 100
 }
@@ -513,31 +513,31 @@ class SeneschalPanel extends Application {
       minimizable: true
     });
   }
-  
+
   constructor(options = {}) {
     super(options);
     this.session = new ConversationSession();
     this.backendClient = new BackendClient();
   }
-  
+
   async _handleUserMessage(content) {
     // Add user message to session
     this.session.addMessage({ role: "user", content });
     this._renderMessage({ role: "user", content });
-    
+
     // Create placeholder for Seneschal response
     const responseEl = this._createResponsePlaceholder();
-    
+
     // Stream response
     await this.backendClient.streamChat({
       messages: this.session.getMessagesForContext(),
       userContext: buildUserContext(),
       onChunk: (text) => this._appendToResponse(responseEl, text),
       onComplete: (fullResponse, toolCalls) => {
-        this.session.addMessage({ 
-          role: "assistant", 
+        this.session.addMessage({
+          role: "assistant",
           content: fullResponse,
-          toolCalls 
+          toolCalls
         });
         this._finalizeResponse(responseEl);
       },
@@ -555,7 +555,7 @@ For quick queries that don't need conversation context:
 Hooks.on("chatMessage", (chatLog, message, chatData) => {
   const prefix = game.settings.get("fvtt-seneschal", "chatCommandPrefix");
   if (!message.startsWith(prefix + " ")) return true;
-  
+
   const query = message.slice(prefix.length + 1);
   handleOneShotQuery(query, chatData);
   return false;
@@ -568,7 +568,7 @@ async function handleOneShotQuery(query, chatData) {
     speaker: { alias: game.i18n.localize("SENESCHAL.Name") },
     whisper: game.user.role < 4 ? [game.user.id] : []
   });
-  
+
   try {
     // Get complete response (no streaming to chat)
     const response = await backendClient.chat({
@@ -576,7 +576,7 @@ async function handleOneShotQuery(query, chatData) {
       userContext: buildUserContext(),
       stream: false
     });
-    
+
     // Replace thinking message with result
     await thinkingMsg.update({
       content: `<div class="ai-response">${marked.parse(response.content)}</div>`
@@ -597,10 +597,10 @@ async function handleOneShotQuery(query, chatData) {
 function canUserAccess(document, userContext, requiredLevel) {
   const user = game.users.get(userContext.userId);
   if (!user) return false;
-  
+
   // GM can access everything
   if (userContext.role >= 4) return true;
-  
+
   return document.testUserPermission(user, requiredLevel);
 }
 
@@ -712,22 +712,22 @@ use std::path::PathBuf;
 pub struct AppConfig {
     #[serde(default = "default_server")]
     pub server: ServerConfig,
-    
+
     #[serde(default = "default_ollama")]
     pub ollama: OllamaConfig,
-    
+
     #[serde(default = "default_embeddings")]
     pub embeddings: EmbeddingsConfig,
-    
+
     #[serde(default = "default_storage")]
     pub storage: StorageConfig,
-    
+
     #[serde(default)]
     pub fvtt: FvttConfig,
-    
+
     #[serde(default = "default_mcp")]
     pub mcp: McpConfig,
-    
+
     #[serde(default = "default_limits")]
     pub limits: LimitsConfig,
 }
@@ -736,7 +736,7 @@ pub struct AppConfig {
 pub struct ServerConfig {
     #[serde(default = "default_host")]
     pub host: String,  // "0.0.0.0"
-    
+
     #[serde(default = "default_port")]
     pub port: u16,  // 8080
 }
@@ -745,10 +745,10 @@ pub struct ServerConfig {
 pub struct OllamaConfig {
     #[serde(default = "default_ollama_url")]
     pub base_url: String,  // "http://localhost:11434"
-    
+
     #[serde(default = "default_model")]
     pub default_model: String,  // "llama3.2"
-    
+
     #[serde(default = "default_temperature")]
     pub temperature: f32,  // 0.7
 }
@@ -764,7 +764,7 @@ pub struct StorageConfig {
 pub struct LimitsConfig {
     #[serde(default = "default_max_document_size")]
     pub max_document_size_bytes: u64,  // 104_857_600 (100MB)
-    
+
     #[serde(default = "default_rate_limit")]
     pub rate_limit_rpm: u32,  // 60
 }
@@ -866,12 +866,12 @@ impl OllamaClient {
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         // GET /api/tags returns list of models
         let tags: TagsResponse = self.get("/api/tags").await?;
-        
+
         let mut models = Vec::new();
         for model in tags.models {
             // POST /api/show returns detailed model info
             let show: ShowResponse = self.post("/api/show", json!({ "name": &model.name })).await?;
-            
+
             // Extract context length from model_info
             // Path: model_info.<architecture>.context_length
             // where architecture comes from model_info.general.architecture
@@ -883,7 +883,7 @@ impl OllamaClient {
                     show.model_info.get(&key)
                 })
                 .and_then(|v| v.as_u64());
-            
+
             models.push(ModelInfo {
                 name: model.name,
                 context_length,
@@ -891,7 +891,7 @@ impl OllamaClient {
                 quantization: show.details.quantization_level,
             });
         }
-        
+
         Ok(models)
     }
 }
@@ -924,7 +924,7 @@ Content-Type: application/json
   "stream": true,
   "user_context": {
     "userId": "abc123",
-    "userName": "Player1", 
+    "userName": "Player1",
     "role": 1,
     "ownedActorIds": ["actor1"],
     "characterId": "actor1"
@@ -1047,7 +1047,7 @@ pub async fn search(
     filters: Option<SearchFilters>,
 ) -> Result<Vec<SearchResult>> {
     let query_embedding = self.embedder.embed(query)?;
-    
+
     // Build query with access control
     // Only return documents where access_level.accessible_by(user_role)
     let mut sql = String::from(r#"
@@ -1056,24 +1056,24 @@ pub async fn search(
         JOIN chunk_vectors v ON c.id = v.rowid
         WHERE v.embedding MATCH ?
     "#);
-    
+
     // Access control filter: access_level <= user_role
     sql.push_str(&format!(" AND CAST(c.access_level AS INTEGER) <= {}", user_role));
-    
+
     // Tag filters
     if let Some(ref f) = filters {
         if !f.tags.is_empty() {
             let tag_conditions: Vec<String> = f.tags.iter()
                 .map(|t| format!("EXISTS (SELECT 1 FROM chunk_tags ct WHERE ct.chunk_id = c.id AND ct.tag = '{}')", t))
                 .collect();
-            
+
             let join = if f.tags_match == TagMatch::All { " AND " } else { " OR " };
             sql.push_str(&format!(" AND ({})", tag_conditions.join(join)));
         }
     }
-    
+
     sql.push_str(" ORDER BY v.distance LIMIT ?");
-    
+
     // Execute query...
 }
 ```
@@ -1092,34 +1092,34 @@ pub enum Tool {
         #[serde(default = "default_limit")]
         limit: usize,
     },
-    
+
     /// Retrieve a specific document by ID
     DocumentGet {
         document_id: String,
         #[serde(default)]
         page: Option<u32>,
     },
-    
+
     /// Read FVTT document (respects permissions)
     FvttRead {
         document_type: FvttDocumentType,
         document_id: String,
     },
-    
-    /// Write/Create FVTT document (respects permissions)  
+
+    /// Write/Create FVTT document (respects permissions)
     FvttWrite {
         document_type: FvttDocumentType,
         operation: WriteOperation,
         data: serde_json::Value,
     },
-    
+
     /// Roll dice
     DiceRoll {
         formula: String,
         #[serde(default)]
         label: Option<String>,
     },
-    
+
     /// Query game system schema
     SystemSchema {
         #[serde(default)]
@@ -1171,11 +1171,11 @@ impl SeneschalMcpServer {
             10,
             tags.map(|t| SearchFilters { tags: t, tags_match: TagMatch::Any }),
         ).await?;
-        
+
         let content = format_search_results(&results);
         Ok(CallToolResult::success(vec![Content::text(content)]))
     }
-    
+
     #[tool(description = "Get a specific document or page")]
     async fn document_get(
         &self,
@@ -1187,7 +1187,7 @@ impl SeneschalMcpServer {
         // Implementation...
         todo!()
     }
-    
+
     // ... other tools
 }
 
@@ -1273,7 +1273,7 @@ Multi-volume works (e.g., "The Great Rift" volumes 1-2) are handled via tags:
 }
 
 {
-  "title": "The Great Rift - Volume 2", 
+  "title": "The Great Rift - Volume 2",
   "tags": ["the-great-rift", "setting", "volume-2"]
 }
 ```
@@ -1489,27 +1489,27 @@ use thiserror::Error;
 pub enum ServiceError {
     #[error("Authentication failed")]
     Auth(#[source] AuthError),
-    
+
     #[error("Permission denied for {action} on {resource}")]
     PermissionDenied {
         action: &'static str,
         resource: String,
     },
-    
+
     #[error("Document not found")]
     DocumentNotFound {
         document_id: String,
     },
-    
+
     #[error("Ollama error")]
     Ollama(#[source] OllamaError),
-    
+
     #[error("Database error")]
     Database(#[source] rusqlite::Error),
-    
+
     #[error("Document processing failed")]
     Processing(#[source] ProcessingError),
-    
+
     #[error("Rate limit exceeded")]
     RateLimitExceeded {
         retry_after_secs: u64,
@@ -1520,10 +1520,10 @@ pub enum ServiceError {
 pub enum AuthError {
     #[error("Missing authorization header")]
     MissingHeader,
-    
+
     #[error("Invalid API key")]
     InvalidKey,
-    
+
     #[error("Key verification failed")]
     VerificationFailed(#[source] argon2::Error),
 }
@@ -1532,10 +1532,10 @@ pub enum AuthError {
 pub enum OllamaError {
     #[error("Connection failed")]
     Connection(#[source] reqwest::Error),
-    
+
     #[error("Model not found")]
     ModelNotFound { model: String },
-    
+
     #[error("Generation failed")]
     Generation { status: u16, message: String },
 }
@@ -1635,7 +1635,7 @@ fn init_logging() {
         .json()
         .with_target(true)
         .with_thread_ids(true);
-    
+
     tracing_subscriber::registry()
         .with(fmt::layer().event_format(format))
         .with(EnvFilter::from_default_env())
@@ -1754,7 +1754,7 @@ impl I18n {
 
 Player1: /ai What's the DM for shooting at extreme range?
 
-Seneschal: According to the Traveller Core Rulebook, 
+Seneschal: According to the Traveller Core Rulebook,
 shooting at Extreme range applies DM-4 to the attack roll.
 ```
 
@@ -1788,14 +1788,14 @@ pub enum TravellerTool {
     ParseUwp {
         uwp: String,  // e.g., "A867949-C"
     },
-    
+
     /// Calculate jump requirements
     JumpCalculation {
         distance_parsecs: u8,
         ship_jump_rating: u8,
         ship_tonnage: u32,
     },
-    
+
     /// Look up a specific skill's description and usage
     SkillLookup {
         skill_name: String,

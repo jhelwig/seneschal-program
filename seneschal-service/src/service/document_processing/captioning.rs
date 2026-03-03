@@ -54,11 +54,10 @@ impl SeneschalService {
                 if model.is_empty() {
                     info!(doc_id = %doc_id, "No vision model configured, skipping captioning");
                     // Mark as completed (no captioning needed) instead of failed
-                    if let Err(e) = self.db.update_captioning_status(
-                        doc_id,
-                        CaptioningStatus::Completed,
-                        None,
-                    ) {
+                    if let Err(e) =
+                        self.db
+                            .update_captioning_status(doc_id, CaptioningStatus::Completed, None)
+                    {
                         warn!(doc_id = %doc_id, error = %e, "Failed to update captioning status");
                     }
                     self.broadcast_captioning_progress(doc_id, "completed", None, None, None);

@@ -1,0 +1,18 @@
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "check-case-conflict" },
+  { id = "check-merge-conflict" },
+  { id = "check-toml" },
+  { id = "end-of-file-fixer" },
+  { id = "mixed-line-ending" },
+  { id = "trailing-whitespace" },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+  { id = "clippy", name = "cargo clippy", language = "system", entry = "cargo clippy", files = "\\.rs$", pass_filenames = false },
+  { id = "cargo-check", name = "cargo check", language = "system", entry = "cargo check", files = "\\.rs$", pass_filenames = false },
+  { id = "rustfmt", name = "cargo fmt", language = "system", entry = "cargo fmt", files = "\\.rs$", pass_filenames = false },
+]
